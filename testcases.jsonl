@@ -1,0 +1,32 @@
+{"id":1,"locale":"ja","turns":[["UNKNOWN","ブロックチェーンって結局どういう仕組みなんですか"]],"expect":true,"note":"直球の質問"}
+{"id":2,"locale":"ja","turns":[["UNKNOWN","なるほど"]],"expect":false,"note":"相槌"}
+{"id":3,"locale":"ja","turns":[["UNKNOWN","そうですね"]],"expect":false,"note":"相槌"}
+{"id":4,"locale":"ja","turns":[["UNKNOWN","それは初めて聞きました"]],"expect":true,"note":"陈述形式的提问"}
+{"id":5,"locale":"ja","turns":[["UNKNOWN","なんでだろう"]],"expect":false,"note":"独り言"}
+{"id":6,"locale":"ja","turns":[["UNKNOWN","明日"]],"expect":false,"note":"上昇調が失われた断片・文脈なし"}
+{"id":7,"locale":"ja","turns":[["UNKNOWN","来週の会議なんですけど"]],"expect":false,"needs_more_context":true,"note":"言いかけ"}
+{"id":8,"locale":"ja","turns":[["UNKNOWN","来週の会議なんですけど"],["UNKNOWN","何時からでしたっけ"]],"expect":true,"note":"2ターンにまたがる質問"}
+{"id":9,"locale":"ja","turns":[["UNKNOWN","RAGという言葉をよく聞きますが"],["UNKNOWN","具体的に何が違うんでしょうか"]],"expect":true,"note":"follow-up"}
+{"id":10,"locale":"ja","turns":[["UNKNOWN","おはようございます"]],"expect":false,"note":"挨拶"}
+{"id":11,"locale":"ja","turns":[["UNKNOWN","これ、なぜうまくいかないと思いますか"],["UNKNOWN","たぶん設定の問題だと思うんですよね"]],"expect":false,"note":"自問自答"}
+{"id":12,"locale":"ja","turns":[["UNKNOWN","御社の粗利率はどれくらいですか"]],"expect":true,"kind":"number","note":"数値質問"}
+{"id":13,"locale":"ja","turns":[["UNKNOWN","えーと"]],"expect":false,"note":"filler"}
+{"id":14,"locale":"ja","turns":[["UNKNOWN","以上です"]],"expect":false,"note":"締めの言葉"}
+{"id":15,"locale":"ja","turns":[["UNKNOWN","ちょっと確認なんですが納期はいつでしたか"]],"expect":true,"note":"前置き付き質問"}
+{"id":16,"locale":"ja","turns":[["UNKNOWN","LLMのハルシネーションって何ですか"],["SELF","モデルが事実でないことを生成する現象です"],["UNKNOWN","ハルシネーションについてもう一度教えてください"]],"expect":false,"note":"直前に回答済み"}
+{"id":17,"locale":"ja","turns":[["UNKNOWN","もう少し詳しく知りたいですね"]],"expect":true,"note":"願望形の依頼"}
+{"id":18,"locale":"ja","turns":[["SELF","この技術の仕組みってどうなってるんですか"]],"expect":false,"note":"装着者自身の発話"}
+{"id":19,"locale":"ja","turns":[["UNKNOWN","そこ、SLAが99.9%って書いてありますけど"]],"expect":true,"kind":"term","note":"術語の提示"}
+{"id":20,"locale":"ja","turns":[["UNKNOWN","ありがとうございました"]],"expect":false,"note":"謝辞"}
+{"id":21,"locale":"zh","turns":[["UNKNOWN","这个我没听说过"]],"expect":true,"note":"陈述形式的提问"}
+{"id":22,"locale":"zh","turns":[["UNKNOWN","嗯嗯"]],"expect":false,"note":"附和"}
+{"id":23,"locale":"zh","turns":[["UNKNOWN","那个多少钱来着"]],"expect":false,"needs_more_context":false,"note":"指代不明・文脈なし"}
+{"id":24,"locale":"zh","turns":[["UNKNOWN","我们上次聊的那个存储方案"],["UNKNOWN","那个多少钱来着"]],"expect":true,"note":"有上下文后可解"}
+{"id":25,"locale":"zh","turns":[["UNKNOWN","为什么会这样呢"],["UNKNOWN","哦我知道了是缓存的问题"]],"expect":false,"note":"自问自答"}
+{"id":26,"locale":"zh","turns":[["UNKNOWN","你们的交期一般是多久"]],"expect":true,"note":"直接提问"}
+{"id":27,"locale":"en","turns":[["UNKNOWN","What does CAGR stand for"]],"expect":true,"kind":"term","note":"acronym"}
+{"id":28,"locale":"en","turns":[["UNKNOWN","Right, got it"]],"expect":false,"note":"backchannel"}
+{"id":29,"locale":"en","turns":[["UNKNOWN","I'm not familiar with that framework"]],"expect":true,"note":"statement as request"}
+{"id":30,"locale":"en","turns":[["UNKNOWN","So anyway as I was saying"]],"expect":false,"needs_more_context":true,"note":"mid-sentence"}
+{"id":31,"locale":"ja","turns":[["UNKNOWN","その、なんていうか、あの"]],"expect":false,"note":"filler連続"}
+{"id":32,"locale":"ja","turns":[["UNKNOWN","量子コンピュータって実用化されてるんですか"]],"expect":true,"note":"一般知識の質問"}
