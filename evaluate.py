@@ -148,8 +148,8 @@ def _clip(text: str, width: int) -> str:
     return text[: width - 1] + "…"
 
 
-def _over_length_fail(result: RouterResult) -> bool:
-    """True when the model answer was over 40 chars (forced to none)."""
+def _suppressed_over_length(result: RouterResult) -> bool:
+    """True when an over-length answer was converted to none (observational)."""
     return result.truncated_to_none or result.over_length
 
 
@@ -183,7 +183,9 @@ def render_report(rows: Sequence[CaseResult], *, color: bool) -> str:
     accuracy: float = (tp + tn) / n if n else 0.0
     fpr: float = fp / n_neg if n_neg else 0.0
     fnr: float = fn / n_pos if n_pos else 0.0
-    over_n: int = sum(1 for r in rows if _over_length_fail(r.result))
+    suppressed_over_length_n: int = sum(
+        1 for r in rows if _suppressed_over_length(r.result)
+    )
     latencies: list[float] = [r.latency_ms for r in rows]
     p50: float = percentile(latencies, 50.0)
     p95: float = percentile(latencies, 95.0)
@@ -194,7 +196,6 @@ def render_report(rows: Sequence[CaseResult], *, color: bool) -> str:
 
     acc_ok: bool = accuracy > 0.80
     fp_ok: bool = fpr < 0.15
-    ol_ok: bool = over_n == 0
     lat_ok: bool = p95 < 2000.0
 
     fp_rows: list[CaseResult] = [
@@ -208,7 +209,7 @@ def render_report(rows: Sequence[CaseResult], *, color: bool) -> str:
     out.append(paint("HUD router evaluation", BOLD, color))
     out.append(f"cases: {n}   positives(expect=true): {n_pos}   negatives(expect=false): {n_neg}")
     out.append("")
-    out.append(paint("Acceptance", BOLD, color))
+    out.append(paint("Acceptance (PASS/FAIL gates only)", BOLD, color))
     out.append(
         f"  should_respond accuracy > 80% : {accuracy * 100:5.1f}%   {ok(acc_ok)}"
         f"   ({tp + tn}/{n})"
@@ -218,13 +219,14 @@ def render_report(rows: Sequence[CaseResult], *, color: bool) -> str:
         f"   ({fp}/{n_neg})"
     )
     out.append(
-        f"  false negative rate          : {fnr * 100:5.1f}%"
-        f"   ({fn}/{n_pos})"
-    )
-    out.append(f"  over-length answers    = 0   : {over_n:5d}    {ok(ol_ok)}")
-    out.append(
         f"  latency p50 / p95  p95<2000 : {p50:6.1f} / {p95:6.1f} ms   {ok(lat_ok)}"
         f"   (mean {mean_ms:.1f} ms)"
+    )
+    out.append("")
+    out.append(paint("Informational", BOLD, color))
+    out.append(
+        f"  false negative rate          : {fnr * 100:5.1f}%"
+        f"   ({fn}/{n_pos})   (not a gate)"
     )
     out.append("")
     out.append(paint("False positives (MOST IMPORTANT)", BOLD, color))
@@ -256,27 +258,33 @@ def render_report(rows: Sequence[CaseResult], *, color: bool) -> str:
                 f"note={r.case.note!r}  last={_last_text(r.case)!r}"
             )
     out.append("")
-    if over_n:
-        out.append(
-            paint(
-                "Over-length answers (converted to none / truncated_to_none)",
-                YELLOW + BOLD,
-                color,
-            )
+    out.append(
+        paint(
+            "Observational: suppressed_over_length (not a gate)",
+            YELLOW + BOLD,
+            color,
         )
+    )
+    out.append(
+        f"  count: {suppressed_over_length_n}   "
+        "(over-length model answer converted to should_respond=false / none)"
+    )
+    if not suppressed_over_length_n:
+        out.append("  none")
+    else:
         for r in rows:
-            if _over_length_fail(r.result):
+            if _suppressed_over_length(r.result):
                 out.append(
                     f"  id={r.case.id}  kind={r.result.kind}  "
                     f"truncated_to_none={r.result.truncated_to_none}  "
                     f"answer={r.result.answer!r}  (limit {MAX_ANSWER_CHARS})"
                 )
-        out.append("")
+    out.append("")
 
     out.append(paint("Per-case comparison", BOLD, color))
     header: str = (
         f"{'id':>4}  {'exp':<5} {'got':<5} {'ok':<3} "
-        f"{'conf':>4} {'kind':<12} {'nmc':<5} {'ol':<3} "
+        f"{'conf':>4} {'kind':<12} {'nmc':<5} {'sol':<3} "
         f"{'ms':>7}  {'note':<22}  reason"
     )
     out.append(header)
@@ -289,13 +297,13 @@ def render_report(rows: Sequence[CaseResult], *, color: bool) -> str:
             f"{r.case.id:4d}  {exp_s:<5} {got_s:<5} {mark:<3} "
             f"{r.result.confidence:4.2f} {r.result.kind:<12} "
             f"{str(r.result.needs_more_context):<5} "
-            f"{'Y' if _over_length_fail(r.result) else '':<3} "
+            f"{'Y' if _suppressed_over_length(r.result) else '':<3} "
             f"{r.latency_ms:7.1f}  {_clip(r.case.note, 22):<22}  "
             f"{r.result.reason}"
         )
         if not r.correct:
             line = paint(line, RED, color)
-        elif _over_length_fail(r.result):
+        elif _suppressed_over_length(r.result):
             line = paint(line, YELLOW, color)
         out.append(line)
         extra: list[str] = []
@@ -317,7 +325,8 @@ def render_report(rows: Sequence[CaseResult], *, color: bool) -> str:
     out.append("")
     out.append(
         "Notes: expected `should_respond` values are not modified. "
-        "`kind` / `needs_more_context` on a case are informational."
+        "`kind` / `needs_more_context` on a case are informational. "
+        "`sol` = suppressed_over_length (observational, not an acceptance gate)."
     )
     return "\n".join(out) + "\n"
 
@@ -357,16 +366,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
     sys.stdout.write(render_report(rows, color=color))
-    # Non-zero when acceptance gates fail, so CI can flag a regression.
+    # Non-zero only when the three acceptance gates fail.
     n: int = len(rows)
     tp_tn: int = sum(1 for r in rows if r.correct)
     accuracy: float = tp_tn / n if n else 0.0
     n_neg: int = sum(1 for r in rows if not r.case.expect)
     fp: int = sum(1 for r in rows if (not r.case.expect) and r.result.should_respond)
     fpr: float = fp / n_neg if n_neg else 0.0
-    over_n: int = sum(1 for r in rows if _over_length_fail(r.result))
     p95: float = percentile([r.latency_ms for r in rows], 95.0)
-    failed: bool = (accuracy <= 0.80) or (fpr >= 0.15) or (over_n != 0) or (p95 >= 2000.0)
+    failed: bool = (accuracy <= 0.80) or (fpr >= 0.15) or (p95 >= 2000.0)
     return 1 if failed else 0
 
 

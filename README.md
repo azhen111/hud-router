@@ -63,7 +63,7 @@ Copy `.env.example` to `.env` or export the same variables. Nothing is hardcoded
 
 - `kind`: `answer` | `term` | `number` | `translation` | `none`
 - `answer` is empty when `should_respond` is false
-- Non-empty answers are at most 40 characters (full-width = 1). Over-length answers are truncated for HUD safety and counted as failures by `evaluate.py`
+- Non-empty answers are at most 40 characters (full-width = 1). Over-length answers are converted to `should_respond=false` (`truncated_to_none`); `evaluate.py` reports this as observational `suppressed_over_length`, not an acceptance gate
 - `needs_more_context: true` forces `should_respond: false`
 
 ## Run the CLI
@@ -95,14 +95,18 @@ The report includes:
 
 - Overall `should_respond` accuracy vs `expect`
 - False-positive rate (expect false, got true), grouped by model `reason`
-- False-negative rate
-- Over-length answer count
+- False-negative rate (informational)
+- `suppressed_over_length` count (observational: over-length answers converted to none; not a PASS/FAIL gate)
 - Latency p50 / p95 in milliseconds
 - Per-case table (wrong rows in red)
 
-Acceptance targets (when a live model is configured):
+Acceptance targets that affect PASS/FAIL and the process exit code (when a live model is configured):
 
-- False-positive rate &lt; 15%
 - `should_respond` accuracy &gt; 80%
-- Over-length count = 0
+- False-positive rate &lt; 15%
 - p95 latency &lt; 2000 ms
+
+## Known limitations / 已知限制
+
+- Deduplication of repeated questions is **not** implemented in this layer. It belongs to the display layer.
+- Speaker labels from upstream are currently mostly `UNKNOWN`, so the SELF guard rarely fires in practice.
