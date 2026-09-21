@@ -306,6 +306,10 @@ def render_report(rows: Sequence[CaseResult], *, color: bool) -> str:
         elif _suppressed_over_length(r.result):
             line = paint(line, YELLOW, color)
         out.append(line)
+        dump: str = json.dumps(r.result.to_dict(), ensure_ascii=False)
+        if not r.correct:
+            dump = paint(dump, RED, color)
+        out.append(dump)
         extra: list[str] = []
         if r.result.answer:
             extra.append(f"answer={r.result.answer!r} ({answer_char_len(r.result.answer)}ch)")

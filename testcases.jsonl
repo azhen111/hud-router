@@ -26,7 +26,7 @@
 {"id":26,"locale":"zh","turns":[["UNKNOWN","你们的交期一般是多久"]],"expect":true,"note":"直接提问"}
 {"id":27,"locale":"en","turns":[["UNKNOWN","What does CAGR stand for"]],"expect":true,"kind":"term","note":"acronym"}
 {"id":28,"locale":"en","turns":[["UNKNOWN","Right, got it"]],"expect":false,"note":"backchannel"}
-{"id":29,"locale":"en","turns":[["UNKNOWN","I'm not familiar with that framework"]],"expect":true,"note":"statement as request"}
+{"id":29,"locale":"en","turns":[["UNKNOWN","We ended up going with Svelte for the rewrite"],["UNKNOWN","I'm not familiar with that framework"]],"expect":true,"note":"statement as request, with antecedent"}
 {"id":30,"locale":"en","turns":[["UNKNOWN","So anyway as I was saying"]],"expect":false,"needs_more_context":true,"note":"mid-sentence"}
 {"id":31,"locale":"ja","turns":[["UNKNOWN","その、なんていうか、あの"]],"expect":false,"note":"filler連続"}
 {"id":32,"locale":"ja","turns":[["UNKNOWN","量子コンピュータって実用化されてるんですか"]],"expect":true,"note":"一般知識の質問"}
