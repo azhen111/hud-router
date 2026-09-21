@@ -7,7 +7,7 @@ import json
 import sys
 from typing import Any
 
-from router import RouterConfigError, result_json, route
+from router import RouterConfigError, RouterResult, result_json, route
 
 
 def main() -> int:
@@ -25,7 +25,7 @@ def main() -> int:
         print("cli.py: payload must be a JSON object", file=sys.stderr)
         return 2
     try:
-        result = route(payload)
+        result: RouterResult = route(payload)
     except RouterConfigError as exc:
         print(f"cli.py: {exc}", file=sys.stderr)
         return 2
