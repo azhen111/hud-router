@@ -106,7 +106,11 @@ Acceptance targets that affect PASS/FAIL and the process exit code (when a live 
 - False-positive rate &lt; 15%
 - p95 latency &lt; 2000 ms
 
+Even with `temperature=0`, about 10% output uncertainty has been observed. **Run acceptance 5 times and look at the distribution.** Do not change code or the system prompt on the basis of a single evaluate run.
+
 ## Known limitations / 已知限制
 
 - Deduplication of repeated questions is **not** implemented in this layer. It belongs to the display layer.
 - Speaker labels from upstream are currently mostly `UNKNOWN`, so the SELF guard rarely fires in practice.
+- Even at `temperature=0`, roughly 10% run-to-run output uncertainty has been observed. Acceptance must be run **5 times**; a single run must not be used as the basis for code or prompt changes.
+- Known API tail-latency jitter: p95 can occasionally exceed 2000ms. Treat that as an observational issue, not an automatic reason to change the router.

@@ -50,10 +50,9 @@ class RouterResult:
     needs_more_context: bool
     over_length: bool = False
     truncated_to_none: bool = False
-    suppressed_interrogative: bool = False
 
     def to_dict(self) -> dict[str, bool | float | str]:
-        """Public contract fields plus suppression flags for CLI/logs."""
+        """Public contract fields plus `truncated_to_none` for CLI/logs."""
         return {
             "should_respond": self.should_respond,
             "confidence": self.confidence,
@@ -62,7 +61,6 @@ class RouterResult:
             "answer": self.answer,
             "needs_more_context": self.needs_more_context,
             "truncated_to_none": self.truncated_to_none,
-            "suppressed_interrogative": self.suppressed_interrogative,
         }
 
 
@@ -234,7 +232,6 @@ def degrade(reason: str) -> RouterResult:
         needs_more_context=False,
         over_length=False,
         truncated_to_none=False,
-        suppressed_interrogative=False,
     )
 
 
@@ -254,8 +251,6 @@ def normalize_result(raw: Mapping[str, Any]) -> RouterResult:
         kind = "answer"
     over_length: bool = answer_char_len(answer) > MAX_ANSWER_CHARS
     truncated_to_none: bool = False
-    stripped_answer: str = answer.strip()
-    suppressed_interrogative: bool = stripped_answer.endswith(("?", "？"))
     if over_length:
         # Do not truncate-and-keep: a >40 answer is a failed trigger.
         should = False
@@ -267,15 +262,6 @@ def normalize_result(raw: Mapping[str, Any]) -> RouterResult:
             if reason
             else "over-length answer converted to none"
         )
-    if suppressed_interrogative:
-        should = False
-        kind = "none"
-        answer = ""
-        reason = (
-            f"{reason}; interrogative answer converted to none"
-            if reason
-            else "interrogative answer converted to none"
-        )
     return RouterResult(
         should_respond=should,
         confidence=_as_confidence(raw.get("confidence")),
@@ -285,7 +271,6 @@ def normalize_result(raw: Mapping[str, Any]) -> RouterResult:
         needs_more_context=needs_more,
         over_length=over_length,
         truncated_to_none=truncated_to_none,
-        suppressed_interrogative=suppressed_interrogative,
     )
 
 
@@ -370,7 +355,6 @@ def route(
             needs_more_context=False,
             over_length=False,
             truncated_to_none=False,
-            suppressed_interrogative=False,
         )
     locale: str = str(payload.get("locale") or "ja")
     wearer_note_raw: object = payload.get("wearer_note")

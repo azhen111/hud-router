@@ -186,9 +186,6 @@ def render_report(rows: Sequence[CaseResult], *, color: bool) -> str:
     suppressed_over_length_n: int = sum(
         1 for r in rows if _suppressed_over_length(r.result)
     )
-    suppressed_interrogative_n: int = sum(
-        1 for r in rows if r.result.suppressed_interrogative
-    )
     latencies: list[float] = [r.latency_ms for r in rows]
     p50: float = percentile(latencies, 50.0)
     p95: float = percentile(latencies, 95.0)
@@ -283,27 +280,6 @@ def render_report(rows: Sequence[CaseResult], *, color: bool) -> str:
                     f"answer={r.result.answer!r}  (limit {MAX_ANSWER_CHARS})"
                 )
     out.append("")
-    out.append(
-        paint(
-            "Observational: suppressed_interrogative (not a gate)",
-            YELLOW + BOLD,
-            color,
-        )
-    )
-    out.append(
-        f"  count: {suppressed_interrogative_n}   "
-        "(answer contained ? or ？; converted to should_respond=false / none)"
-    )
-    if not suppressed_interrogative_n:
-        out.append("  none")
-    else:
-        for r in rows:
-            if r.result.suppressed_interrogative:
-                out.append(
-                    f"  id={r.case.id}  kind={r.result.kind}  "
-                    f"reason={r.result.reason!r}"
-                )
-    out.append("")
 
     out.append(paint("Per-case comparison", BOLD, color))
     header: str = (
@@ -327,7 +303,7 @@ def render_report(rows: Sequence[CaseResult], *, color: bool) -> str:
         )
         if not r.correct:
             line = paint(line, RED, color)
-        elif _suppressed_over_length(r.result) or r.result.suppressed_interrogative:
+        elif _suppressed_over_length(r.result):
             line = paint(line, YELLOW, color)
         out.append(line)
         dump: str = "model=" + json.dumps(r.result.to_dict(), ensure_ascii=False)
@@ -354,8 +330,7 @@ def render_report(rows: Sequence[CaseResult], *, color: bool) -> str:
     out.append(
         "Notes: expected `should_respond` values are not modified. "
         "`kind` / `needs_more_context` on a case are informational. "
-        "`sol` = suppressed_over_length (observational, not an acceptance gate). "
-        "`suppressed_interrogative` is observational (not a gate)."
+        "`sol` = suppressed_over_length (observational, not an acceptance gate)."
     )
     return "\n".join(out) + "\n"
 
