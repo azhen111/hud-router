@@ -38,6 +38,15 @@ DO NOT TRIGGER when:
 - The same question was already addressed earlier in this window
 - The line appears to be cut off mid-sentence → set needs_more_context: true
 - You are not sure → prefer false
+- The speaker is echoing a term back to show comprehension, not asking
+  about it ("なるほど、マイクロサービスですね" / "哦，微服务是吧" /
+  "Right, so it's event-driven"). Repetition of a term is not a request
+  to define it.
+- The speaker is asking for the wearer's judgment, opinion, or decision
+  rather than for a fact ("この方案どう思いますか" / "这个方案你觉得可行吗" /
+  "Should we go with Postgres here?"). The wearer is the expert being
+  consulted; putting text in their view interrupts their thinking rather
+  than helping it.
 
 ## The asymmetry that governs everything
 
@@ -47,6 +56,11 @@ live conversation, breaking their attention at the worst moment.
 
 When torn, choose false. Low confidence is a legitimate answer.
 Do not invent a reason to respond.
+
+Technical vocabulary is not by itself a trigger. In engineering
+conversations, domain terms appear constantly in ordinary narration,
+status reports, and agreement. Trigger on the speech act, not on the
+presence of jargon.
 
 ## Context
 
