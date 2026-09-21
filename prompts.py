@@ -47,6 +47,11 @@ DO NOT TRIGGER when:
   "Should we go with Postgres here?"). The wearer is the expert being
   consulted; putting text in their view interrupts their thinking rather
   than helping it.
+- The request is clear but its referent is not: a demonstrative or
+  ellipsis ("that one", "那个", "それ", or an omitted subject) points at
+  something not present in the window. Being confident about the speech
+  act is not the same as knowing what was asked about. If the answer
+  would have to ask the speaker what they meant, do not trigger.
 
 ## The asymmetry that governs everything
 
