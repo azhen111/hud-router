@@ -148,6 +148,11 @@ def _clip(text: str, width: int) -> str:
     return text[: width - 1] + "…"
 
 
+def _over_length_fail(result: RouterResult) -> bool:
+    """True when the model answer was over 40 chars (forced to none)."""
+    return result.truncated_to_none or result.over_length
+
+
 def run_cases(cases: Sequence[TestCase]) -> list[CaseResult]:
     results: list[CaseResult] = []
     for case in cases:
@@ -178,7 +183,7 @@ def render_report(rows: Sequence[CaseResult], *, color: bool) -> str:
     accuracy: float = (tp + tn) / n if n else 0.0
     fpr: float = fp / n_neg if n_neg else 0.0
     fnr: float = fn / n_pos if n_pos else 0.0
-    over_n: int = sum(1 for r in rows if r.result.over_length)
+    over_n: int = sum(1 for r in rows if _over_length_fail(r.result))
     latencies: list[float] = [r.latency_ms for r in rows]
     p50: float = percentile(latencies, 50.0)
     p95: float = percentile(latencies, 95.0)
@@ -252,11 +257,18 @@ def render_report(rows: Sequence[CaseResult], *, color: bool) -> str:
             )
     out.append("")
     if over_n:
-        out.append(paint("Over-length answers (truncated for HUD safety)", YELLOW + BOLD, color))
+        out.append(
+            paint(
+                "Over-length answers (converted to none / truncated_to_none)",
+                YELLOW + BOLD,
+                color,
+            )
+        )
         for r in rows:
-            if r.result.over_length:
+            if _over_length_fail(r.result):
                 out.append(
                     f"  id={r.case.id}  kind={r.result.kind}  "
+                    f"truncated_to_none={r.result.truncated_to_none}  "
                     f"answer={r.result.answer!r}  (limit {MAX_ANSWER_CHARS})"
                 )
         out.append("")
@@ -277,13 +289,13 @@ def render_report(rows: Sequence[CaseResult], *, color: bool) -> str:
             f"{r.case.id:4d}  {exp_s:<5} {got_s:<5} {mark:<3} "
             f"{r.result.confidence:4.2f} {r.result.kind:<12} "
             f"{str(r.result.needs_more_context):<5} "
-            f"{'Y' if r.result.over_length else '':<3} "
+            f"{'Y' if _over_length_fail(r.result) else '':<3} "
             f"{r.latency_ms:7.1f}  {_clip(r.case.note, 22):<22}  "
             f"{r.result.reason}"
         )
         if not r.correct:
             line = paint(line, RED, color)
-        elif r.result.over_length:
+        elif _over_length_fail(r.result):
             line = paint(line, YELLOW, color)
         out.append(line)
         extra: list[str] = []
@@ -352,7 +364,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     n_neg: int = sum(1 for r in rows if not r.case.expect)
     fp: int = sum(1 for r in rows if (not r.case.expect) and r.result.should_respond)
     fpr: float = fp / n_neg if n_neg else 0.0
-    over_n: int = sum(1 for r in rows if r.result.over_length)
+    over_n: int = sum(1 for r in rows if _over_length_fail(r.result))
     p95: float = percentile([r.latency_ms for r in rows], 95.0)
     failed: bool = (accuracy <= 0.80) or (fpr >= 0.15) or (over_n != 0) or (p95 >= 2000.0)
     return 1 if failed else 0

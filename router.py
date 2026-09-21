@@ -40,7 +40,7 @@ class RoutePayload(TypedDict, total=False):
 
 @dataclass(frozen=True)
 class RouterResult:
-    """Strict output contract. `over_length` is internal (not serialized)."""
+    """Decision JSON plus logging fields (`over_length`, `truncated_to_none`)."""
 
     should_respond: bool
     confidence: float
@@ -49,9 +49,10 @@ class RouterResult:
     answer: str
     needs_more_context: bool
     over_length: bool = False
+    truncated_to_none: bool = False
 
     def to_dict(self) -> dict[str, bool | float | str]:
-        """Public JSON fields only (fixed contract)."""
+        """Public contract fields plus `truncated_to_none` for CLI/logs."""
         return {
             "should_respond": self.should_respond,
             "confidence": self.confidence,
@@ -59,6 +60,7 @@ class RouterResult:
             "reason": self.reason,
             "answer": self.answer,
             "needs_more_context": self.needs_more_context,
+            "truncated_to_none": self.truncated_to_none,
         }
 
 
@@ -229,6 +231,7 @@ def degrade(reason: str) -> RouterResult:
         answer="",
         needs_more_context=False,
         over_length=False,
+        truncated_to_none=False,
     )
 
 
@@ -247,12 +250,18 @@ def normalize_result(raw: Mapping[str, Any]) -> RouterResult:
     elif kind == "none":
         kind = "answer"
     over_length: bool = answer_char_len(answer) > MAX_ANSWER_CHARS
+    truncated_to_none: bool = False
     if over_length:
-        # HUD safety: never emit more than 40 code points. evaluate.py
-        # still counts this as a failure via RouterResult.over_length.
-        answer = answer[:MAX_ANSWER_CHARS]
-        if not reason:
-            reason = "answer exceeded 40 characters; truncated"
+        # Do not truncate-and-keep: a >40 answer is a failed trigger.
+        should = False
+        kind = "none"
+        answer = ""
+        truncated_to_none = True
+        reason = (
+            f"{reason}; over-length answer converted to none"
+            if reason
+            else "over-length answer converted to none"
+        )
     return RouterResult(
         should_respond=should,
         confidence=_as_confidence(raw.get("confidence")),
@@ -261,6 +270,7 @@ def normalize_result(raw: Mapping[str, Any]) -> RouterResult:
         answer=answer,
         needs_more_context=needs_more,
         over_length=over_length,
+        truncated_to_none=truncated_to_none,
     )
 
 
@@ -300,7 +310,7 @@ def complete_chat(
     common: dict[str, Any] = {
         "model": model,
         "messages": messages,
-        "temperature": 0.0,
+        "temperature": 0.0,  # deterministic; keep at 0.0
         "max_tokens": 256,
     }
     try:
@@ -335,6 +345,17 @@ def route(
     live client must be constructed).
     """
     turns: list[Turn] = window_turns(payload)
+    if turns and str(turns[-1].get("speaker", "")) == "SELF":
+        return RouterResult(
+            should_respond=False,
+            confidence=1.0,
+            kind="none",
+            reason="last speaker is SELF (wearer); no HUD trigger",
+            answer="",
+            needs_more_context=False,
+            over_length=False,
+            truncated_to_none=False,
+        )
     locale: str = str(payload.get("locale") or "ja")
     wearer_note_raw: object = payload.get("wearer_note")
     wearer_note: str | None
