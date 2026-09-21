@@ -254,7 +254,8 @@ def normalize_result(raw: Mapping[str, Any]) -> RouterResult:
         kind = "answer"
     over_length: bool = answer_char_len(answer) > MAX_ANSWER_CHARS
     truncated_to_none: bool = False
-    suppressed_interrogative: bool = ("?" in answer) or ("？" in answer)
+    stripped_answer: str = answer.strip()
+    suppressed_interrogative: bool = stripped_answer.endswith(("?", "？"))
     if over_length:
         # Do not truncate-and-keep: a >40 answer is a failed trigger.
         should = False
