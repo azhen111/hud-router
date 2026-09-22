@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HUD Router — G2 显示通道</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #111;
+      --fg: #eee;
+      --muted: #9aa;
+      --err: #f66;
+      --ok: #6c6;
+      --warn: #db6;
+      --line: #333;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      padding: 16px;
+    }
+    h1 { font-size: 18px; margin: 0 0 12px; }
+    label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+    input[type="text"] {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #1c1c1c;
+      color: var(--fg);
+      font-size: 15px;
+    }
+    .row { display: flex; gap: 8px; margin: 10px 0 16px; }
+    button {
+      flex: 1;
+      padding: 10px 12px;
+      border: 0;
+      border-radius: 6px;
+      font-size: 15px;
+      background: #2a4a7a;
+      color: #fff;
+    }
+    button:disabled { opacity: 0.45; }
+    button.danger { background: #6a2a2a; }
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    .panel h2 { font-size: 13px; color: var(--muted); margin: 0 0 8px; font-weight: 600; }
+    .kv { display: grid; grid-template-columns: 7.5em 1fr; gap: 6px 8px; font-size: 14px; }
+    .kv .k { color: var(--muted); }
+    .mono { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+    .ok { color: var(--ok); }
+    .warn { color: var(--warn); }
+    .err { color: var(--err); }
+    #errorText { min-height: 3em; }
+  </style>
+</head>
+<body>
+  <h1>G2 显示通道</h1>
+  <p style="color:var(--muted);margin:0 0 12px;font-size:13px;">
+    服务器 → 本插件 → BLE → 镜片。只显示 <code>{"text":"..."}</code>，不接麦 / ASR / LLM。
+  </p>
+
+  <label for="wsUrl">WebSocket URL（<code>ws://</code> 或 <code>wss://</code>）</label>
+  <input id="wsUrl" type="text" autocomplete="off" spellcheck="false"
+         placeholder="ws://192.168.1.10:8766" />
+  <div class="row">
+    <button id="btnConnect" type="button">Connect</button>
+    <button id="btnDisconnect" type="button" class="danger" disabled>Disconnect</button>
+  </div>
+
+  <div class="panel">
+    <h2>状态</h2>
+    <div class="kv">
+      <div class="k">连接</div><div id="connState">disconnected</div>
+      <div class="k">已收消息</div><div id="recvCount">0</div>
+      <div class="k">最近一条</div><div id="latestMsg" class="mono">（无）</div>
+      <div class="k">SDK / 桥</div><div id="bridgeState">未初始化</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>最近错误（全文）</h2>
+    <div id="errorText" class="mono err">（无）</div>
+  </div>
+
+  <script type="module">
+    const LS_KEY = "hud-router-ws-url";
+    const CONTAINER_ID = 1;
+    const CONTAINER_NAME = "main";
+    const BACKOFF_CAP_MS = 10000;
+    const SDK_URLS = [
+      "https://esm.sh/@evenrealities/even_hub_sdk@0.0.15",
+      "https://cdn.jsdelivr.net/npm/@evenrealities/even_hub_sdk@0.0.15/+esm",
+    ];
+
+    const el = {
+      wsUrl: document.getElementById("wsUrl"),
+      btnConnect: document.getElementById("btnConnect"),
+      btnDisconnect: document.getElementById("btnDisconnect"),
+      connState: document.getElementById("connState"),
+      recvCount: document.getElementById("recvCount"),
+      latestMsg: document.getElementById("latestMsg"),
+      bridgeState: document.getElementById("bridgeState"),
+      errorText: document.getElementById("errorText"),
+    };
+
+    let sdk = null;
+    let bridge = null;
+    let pageCreated = false;
+    let socket = null;
+    let wantConnected = false;
+    let reconnectTimer = null;
+    let backoffMs = 500;
+    let recvCount = 0;
+
+    function formatError(err) {
+      if (err == null) return "（无）";
+      if (typeof err === "string") return err;
+      const name = err.name || "Error";
+      const msg = err.message || String(err);
+      const stack = err.stack ? "\n" + err.stack : "";
+      return name + ": " + msg + stack;
+    }
+
+    function showError(err) {
+      const text = formatError(err);
+      el.errorText.textContent = text;
+      console.error(text);
+    }
+
+    function setConnState(state, cls) {
+      el.connState.textContent = state;
+      el.connState.className = cls || "";
+    }
+
+    function setBridgeState(state, cls) {
+      el.bridgeState.textContent = state;
+      el.bridgeState.className = cls || "";
+    }
+
+    function persistUrl() {
+      try {
+        localStorage.setItem(LS_KEY, el.wsUrl.value.trim());
+      } catch (err) {
+        showError(err);
+      }
+    }
+
+    function loadSavedUrl() {
+      try {
+        const saved = localStorage.getItem(LS_KEY);
+        if (saved) el.wsUrl.value = saved;
+      } catch (err) {
+        showError(err);
+      }
+    }
+
+    function validateWsUrl(raw) {
+      const url = (raw || "").trim();
+      if (!url) throw new Error("WebSocket URL 为空");
+      let parsed;
+      try {
+        parsed = new URL(url);
+      } catch {
+        throw new Error("无法解析 WebSocket URL: " + url);
+      }
+      if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") {
+        throw new Error("只支持 ws:// 与 wss://，收到: " + parsed.protocol);
+      }
+      return url;
+    }
+
+    function wrapCtor(Ctor, plain) {
+      if (typeof Ctor === "function") {
+        try {
+          return new Ctor(plain);
+        } catch {
+          return plain;
+        }
+      }
+      return plain;
+    }
+
+    function textContainerPlain(content) {
+      return {
+        xPosition: 0,
+        yPosition: 0,
+        width: 576,
+        height: 288,
+        borderWidth: 0,
+        borderColor: 5,
+        paddingLength: 4,
+        containerID: CONTAINER_ID,
+        containerName: CONTAINER_NAME,
+        content: content,
+        textColor: 4,
+        isEventCapture: 1,
+      };
+    }
+
+    function createPayload(content) {
+      const textObject = [wrapCtor(sdk && sdk.TextContainerProperty, textContainerPlain(content))];
+      const body = { containerTotalNum: 1, textObject };
+      return wrapCtor(sdk && sdk.CreateStartUpPageContainer, body);
+    }
+
+    function upgradePayload(content) {
+      return wrapCtor(sdk && sdk.TextContainerUpgrade, {
+        containerID: CONTAINER_ID,
+        containerName: CONTAINER_NAME,
+        content: content,
+      });
+    }
+
+    function isCreateSuccess(result) {
+      if (result === 0 || result === true || result === "success") return true;
+      const enumOk = sdk && sdk.StartUpPageCreateResult && sdk.StartUpPageCreateResult.success;
+      return enumOk !== undefined && result === enumOk;
+    }
+
+    async function importSdk() {
+      let lastErr = null;
+      for (const url of SDK_URLS) {
+        try {
+          return await import(url);
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+      throw lastErr || new Error("无法从 CDN 加载 @evenrealities/even_hub_sdk");
+    }
+
+    async function initBridge() {
+      setBridgeState("加载 SDK…", "warn");
+      try {
+        sdk = await importSdk();
+      } catch (err) {
+        setBridgeState("SDK 加载失败", "err");
+        showError(err);
+        return;
+      }
+
+      if (typeof sdk.waitForEvenAppBridge !== "function") {
+        const err = new Error("SDK 已加载但没有 waitForEvenAppBridge()");
+        setBridgeState("SDK 缺 waitForEvenAppBridge", "err");
+        showError(err);
+        return;
+      }
+
+      try {
+        bridge = await sdk.waitForEvenAppBridge();
+      } catch (err) {
+        setBridgeState("waitForEvenAppBridge 失败", "err");
+        showError(err);
+        return;
+      }
+
+      if (!bridge || typeof bridge.createStartUpPageContainer !== "function") {
+        const err = new Error("桥已返回但缺少 createStartUpPageContainer");
+        setBridgeState("桥不完整", "err");
+        showError(err);
+        return;
+      }
+
+      setBridgeState("桥就绪，创建启动页…", "warn");
+      try {
+        const result = await bridge.createStartUpPageContainer(
+          createPayload("等待服务器推送…"),
+        );
+        if (!isCreateSuccess(result)) {
+          throw new Error("createStartUpPageContainer 失败，返回值=" + String(result));
+        }
+        pageCreated = true;
+        setBridgeState("启动页已创建（containerID=1 / main）", "ok");
+      } catch (err) {
+        setBridgeState("启动页创建失败", "err");
+        showError(err);
+      }
+    }
+
+    async function showOnLenses(text) {
+      if (!bridge) {
+        throw new Error("EvenAppBridge 未就绪（请在 Even App WebView / QR sideload 内打开本页）");
+      }
+      if (!pageCreated) {
+        const result = await bridge.createStartUpPageContainer(createPayload(text));
+        if (!isCreateSuccess(result)) {
+          throw new Error("createStartUpPageContainer 失败，返回值=" + String(result));
+        }
+        pageCreated = true;
+        setBridgeState("启动页已创建（首次推送）", "ok");
+        return;
+      }
+      if (typeof bridge.textContainerUpgrade !== "function") {
+        throw new Error("桥缺少 textContainerUpgrade");
+      }
+      const ok = await bridge.textContainerUpgrade(upgradePayload(text));
+      if (ok === false) {
+        throw new Error("textContainerUpgrade 返回 false（containerID/containerName 必须与创建时一致）");
+      }
+    }
+
+    function clearReconnect() {
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    }
+
+    function scheduleReconnect() {
+      if (!wantConnected) return;
+      clearReconnect();
+      const wait = backoffMs;
+      backoffMs = Math.min(backoffMs * 2, BACKOFF_CAP_MS);
+      setConnState("reconnect in " + wait + "ms", "warn");
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        openSocket();
+      }, wait);
+    }
+
+    function openSocket() {
+      let url;
+      try {
+        url = validateWsUrl(el.wsUrl.value);
+      } catch (err) {
+        showError(err);
+        setConnState("invalid url", "err");
+        wantConnected = false;
+        el.btnConnect.disabled = false;
+        el.btnDisconnect.disabled = true;
+        return;
+      }
+
+      persistUrl();
+      setConnState("connecting", "warn");
+      el.btnConnect.disabled = true;
+      el.btnDisconnect.disabled = false;
+
+      let ws;
+      try {
+        ws = new WebSocket(url);
+      } catch (err) {
+        showError(err);
+        setConnState("error", "err");
+        scheduleReconnect();
+        return;
+      }
+      socket = ws;
+
+      ws.onopen = function () {
+        if (socket !== ws) return;
+        backoffMs = 500;
+        setConnState("connected", "ok");
+      };
+
+      ws.onmessage = async function (ev) {
+        if (socket !== ws) return;
+        recvCount += 1;
+        el.recvCount.textContent = String(recvCount);
+        el.latestMsg.textContent = String(ev.data);
+
+        let parsed;
+        try {
+          parsed = JSON.parse(ev.data);
+        } catch (err) {
+          showError(new Error("JSON 解析失败: " + formatError(err) + "\n原始: " + ev.data));
+          return;
+        }
+        if (parsed == null || typeof parsed !== "object" || typeof parsed.text !== "string") {
+          showError(new Error('期望 JSON {"text":"..."}，收到: ' + ev.data));
+          return;
+        }
+        try {
+          await showOnLenses(parsed.text);
+        } catch (err) {
+          showError(err);
+        }
+      };
+
+      ws.onerror = function (ev) {
+        if (socket !== ws) return;
+        const hint = ev && ev.message ? ev.message : "WebSocket error（详情见 onclose）";
+        showError(new Error(hint));
+      };
+
+      ws.onclose = function (ev) {
+        if (socket !== ws) return;
+        socket = null;
+        const detail =
+          "WebSocket closed code=" + ev.code +
+          " reason=" + (ev.reason || "") +
+          " wasClean=" + ev.wasClean;
+        if (wantConnected) {
+          showError(new Error(detail));
+          scheduleReconnect();
+        } else {
+          setConnState("disconnected", "");
+          el.btnConnect.disabled = false;
+          el.btnDisconnect.disabled = true;
+        }
+      };
+    }
+
+    function connect() {
+      wantConnected = true;
+      backoffMs = 500;
+      clearReconnect();
+      if (socket) {
+        try { socket.close(); } catch (err) { showError(err); }
+        socket = null;
+      }
+      openSocket();
+    }
+
+    function disconnect() {
+      wantConnected = false;
+      clearReconnect();
+      if (socket) {
+        try { socket.close(); } catch (err) { showError(err); }
+        socket = null;
+      }
+      setConnState("disconnected", "");
+      el.btnConnect.disabled = false;
+      el.btnDisconnect.disabled = true;
+    }
+
+    window.addEventListener("error", function (ev) {
+      showError(ev.error || ev.message || ev);
+    });
+    window.addEventListener("unhandledrejection", function (ev) {
+      showError(ev.reason || ev);
+    });
+
+    el.btnConnect.addEventListener("click", connect);
+    el.btnDisconnect.addEventListener("click", disconnect);
+    el.wsUrl.addEventListener("change", persistUrl);
+
+    loadSavedUrl();
+    initBridge();
+  </script>
+</body>
+</html>

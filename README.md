@@ -114,3 +114,8 @@ Even with `temperature=0`, about 10% output uncertainty has been observed. **Run
 - Speaker labels from upstream are currently mostly `UNKNOWN`, so the SELF guard rarely fires in practice.
 - Even at `temperature=0`, roughly 10% run-to-run output uncertainty has been observed. Acceptance must be run **5 times**; a single run must not be used as the basis for code or prompt changes.
 - Known API tail-latency jitter: p95 can occasionally exceed 2000ms. Treat that as an observational issue, not an automatic reason to change the router.
+
+## Phase 2
+
+- `asr/` — microphone → Deepgram → turn aggregator → `route()`. See `asr/README.md`.
+- `glasses/` — G2 text display channel (server → Even Hub plugin → BLE → lenses). See `glasses/README.md`. Does not wire ASR or the router.
