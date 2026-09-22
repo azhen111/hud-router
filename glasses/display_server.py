@@ -15,6 +15,17 @@ import sys
 from pathlib import Path
 from typing import Any
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from server.display_policy import (  # noqa: E402
+    Candidate,
+    DisplayPolicy,
+    add_policy_args,
+    load_policy_settings,
+)
+
 try:
     from websockets.asyncio.server import serve
 except ImportError:  # websockets < 13
@@ -92,10 +103,16 @@ class DisplayHub:
             self.clients.discard(websocket)
             print(f"[conn] - {client_addr(websocket)}  {self.status_line()}", flush=True)
 
+    async def push_obj(self, obj: dict[str, Any]) -> None:
+        payload = json.dumps(obj, ensure_ascii=False)
+        n = len(obj["text"]) if isinstance(obj.get("text"), str) else 0
+        print(f"[push] chars={n}  {self.status_line()}  payload={payload!r}", flush=True)
+        await self._broadcast(payload)
+
     async def push(self, text: str) -> None:
-        payload = json.dumps({"text": text}, ensure_ascii=False)
-        n = len(text)
-        print(f"[push] chars={n}  {self.status_line()}  text={text!r}", flush=True)
+        await self.push_obj({"text": text})
+
+    async def _broadcast(self, payload: str) -> None:
         if not self.clients:
             return
         stale: list[Any] = []
@@ -109,7 +126,51 @@ class DisplayHub:
             self.clients.discard(ws)
 
 
-async def stdin_loop(hub: DisplayHub) -> None:
+def parse_candidate_line(raw: str, default_conf: float) -> Candidate:
+    stripped = raw.strip()
+    if stripped.startswith("{"):
+        try:
+            obj = json.loads(stripped)
+        except json.JSONDecodeError:
+            return Candidate(text=raw, confidence=default_conf)
+        if isinstance(obj, dict) and isinstance(obj.get("text"), str):
+            conf = obj.get("confidence", default_conf)
+            try:
+                conf_f = float(conf)
+            except (TypeError, ValueError):
+                conf_f = default_conf
+            kind = str(obj.get("kind") or "answer")
+            return Candidate(text=obj["text"], confidence=conf_f, kind=kind)
+    return Candidate(text=raw, confidence=default_conf)
+
+
+async def emit_line(
+    hub: DisplayHub,
+    raw: str,
+    policy: DisplayPolicy | None,
+    default_conf: float,
+) -> None:
+    if policy is None:
+        await hub.push(raw)
+        return
+    cand = parse_candidate_line(raw, default_conf)
+    decision = policy.consider(cand)
+    print(
+        f"[policy] action={decision.action} reason={decision.reason} "
+        f"tier={decision.tier} consume={decision.consume_budget} "
+        f"text={decision.display_text!r}",
+        flush=True,
+    )
+    if decision.action == "drop":
+        return
+    await hub.push(decision.display_text)
+
+
+async def stdin_loop(
+    hub: DisplayHub,
+    policy: DisplayPolicy | None,
+    default_conf: float,
+) -> None:
     print("交互模式：输入一行回车即推送。Ctrl-D / Ctrl-C 退出。", flush=True)
     while True:
         line = await asyncio.to_thread(sys.stdin.readline)
@@ -119,7 +180,7 @@ async def stdin_loop(hub: DisplayHub) -> None:
         text = unescape_line(line.rstrip("\r\n"))
         if text == "":
             continue
-        await hub.push(text)
+        await emit_line(hub, text, policy, default_conf)
 
 
 async def wait_for_first_client(hub: DisplayHub) -> None:
@@ -147,6 +208,8 @@ async def file_loop(
     path: Path,
     interval_s: float,
     pause: bool,
+    policy: DisplayPolicy | None = None,
+    default_conf: float = 1.0,
 ) -> None:
     lines = iter_fixture_lines(path)
     pacing = "pause(Enter/skip)" if pause else f"interval={interval_s}s"
@@ -157,7 +220,7 @@ async def file_loop(
     await wait_for_first_client(hub)
     for i, text in enumerate(lines, start=1):
         print(f"[file] {i}/{len(lines)}", flush=True)
-        await hub.push(text)
+        await emit_line(hub, text, policy, default_conf)
         if i >= len(lines):
             break
         if pause:
@@ -192,12 +255,56 @@ async def main_async(args: argparse.Namespace) -> None:
         flush=True,
     )
 
+    policy: DisplayPolicy | None = None
+    if args.policy:
+        settings = load_policy_settings(
+            cli=args,
+            config_path=Path(args.policy_config) if args.policy_config else None,
+        )
+        loop = asyncio.get_running_loop()
+        handle: asyncio.TimerHandle | None = None
+
+        def clear_timer() -> None:
+            nonlocal handle
+            if handle is not None:
+                handle.cancel()
+                handle = None
+
+        def set_timer(delay_ms: int, cb: Any) -> None:
+            nonlocal handle
+            clear_timer()
+            handle = loop.call_later(delay_ms / 1000.0, cb)
+
+        def on_expire() -> None:
+            loop.create_task(hub.push_obj({"clear": True}))
+
+        policy = DisplayPolicy(
+            settings=settings,
+            now_ms=lambda: int(loop.time() * 1000),
+            set_timer=set_timer,
+            clear_timer=clear_timer,
+            on_expire=on_expire,
+        )
+        print(
+            f"[policy] on  full={settings.conf_full} hint={settings.conf_hint} "
+            f"budget={settings.budget_max}/{settings.budget_window_ms}ms "
+            f"ttl={settings.ttl_ms}ms max_chars={settings.max_chars}",
+            flush=True,
+        )
+
     async with serve(hub.handler, args.host, args.port, ssl=ssl_ctx):
         if args.file:
-            await file_loop(hub, Path(args.file), args.interval, args.pause)
+            await file_loop(
+                hub,
+                Path(args.file),
+                args.interval,
+                args.pause,
+                policy,
+                args.confidence,
+            )
             await asyncio.Future()
         else:
-            await stdin_loop(hub)
+            await stdin_loop(hub, policy, args.confidence)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -224,6 +331,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--cert", help="TLS 证书（启用 wss）")
     p.add_argument("--key", help="TLS 私钥（启用 wss）")
+    p.add_argument(
+        "--policy",
+        action="store_true",
+        help="把每行当作候选，经 server.display_policy 再推送",
+    )
+    p.add_argument(
+        "--confidence",
+        type=float,
+        default=1.0,
+        help="非 JSON 行的默认 confidence（--policy）",
+    )
+    add_policy_args(p)
     return p.parse_args(argv)
 
 

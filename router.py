@@ -14,7 +14,7 @@ from openai import OpenAI
 from prompts import ROUTER_SYSTEM_PROMPT, assemble_user_message, normalize_speaker
 
 MAX_TURNS: Final[int] = 6
-MAX_ANSWER_CHARS: Final[int] = 40  # full-width = 1 (Unicode code points)
+MAX_ANSWER_CHARS: Final[int] = 28  # full-width = 1 (Unicode code points)
 ALLOWED_KINDS: Final[frozenset[str]] = frozenset(
     {"answer", "term", "number", "translation", "none"}
 )
@@ -252,7 +252,7 @@ def normalize_result(raw: Mapping[str, Any]) -> RouterResult:
     over_length: bool = answer_char_len(answer) > MAX_ANSWER_CHARS
     truncated_to_none: bool = False
     if over_length:
-        # Do not truncate-and-keep: a >40 answer is a failed trigger.
+        # Do not truncate-and-keep: a >28 answer is a failed trigger.
         should = False
         kind = "none"
         answer = ""

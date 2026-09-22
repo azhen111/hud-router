@@ -63,7 +63,7 @@ Copy `.env.example` to `.env` or export the same variables. Nothing is hardcoded
 
 - `kind`: `answer` | `term` | `number` | `translation` | `none`
 - `answer` is empty when `should_respond` is false
-- Non-empty answers are at most 40 characters (full-width = 1). Over-length answers are converted to `should_respond=false` (`truncated_to_none`); `evaluate.py` reports this as observational `suppressed_over_length`, not an acceptance gate
+- Non-empty answers are at most 28 characters (full-width = 1; one G2 line). Over-length answers are converted to `should_respond=false` (`truncated_to_none`); `evaluate.py` reports this as observational `suppressed_over_length`, not an acceptance gate
 - `needs_more_context: true` forces `should_respond: false`
 
 ## Run the CLI
@@ -118,4 +118,5 @@ Even with `temperature=0`, about 10% output uncertainty has been observed. **Run
 ## Phase 2
 
 - `asr/` — microphone → Deepgram → turn aggregator → `route()`. See `asr/README.md`.
-- `glasses/` — G2 text display channel (server → Even Hub plugin → BLE → lenses). See `glasses/README.md`. Does not wire ASR or the router.
+- `glasses/` — G2 text display (`glasses/app` official template + `glasses/display_server.py`). See `glasses/README.md` and `glasses/SDK_NOTES.md`.
+- `server/display_policy.py` — confidence / budget / dedup / TTL / 28-char length. See `server/README.md`.

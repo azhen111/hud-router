@@ -127,15 +127,15 @@ CJK 是否完整：不要信 unofficial `@evenrealities/pretext` / 社区字表�
 
 1. 手机装 Even Realities App，用同一账号登录 [hub.evenrealities.com/login](https://hub.evenrealities.com/login)。
 2. 强杀并重开手机 App。Even Hub 页右上出现开发者区 / **Scan QR**。
-3. 本机起一个 HTTP 服务（官方示例是 Vite `:5173`；本仓库是静态 `index.html`，见 §2）。
+3. 本机起 `glasses/app` 的 Vite（`:5173`）。
 4. `npm install -g @evenrealities/evenhub-cli`
-5. `evenhub qr --url "http://<本机LAN-IP>:<端口>/webview/index.html"`
+5. `evenhub qr --url "http://<本机LAN-IP>:5173"`（`glasses/app` Vite）
 6. 手机 Scan QR。眼镜应在约 1 秒内出画面。
 
 其它官方方式：
 
 - `evenhub pack` 打 `.ehpk`，经开发者门户装到自己的设备（Private build）。
-- `evenhub-simulator http://localhost:<port>/webview/index.html` 只看布局，不经 BLE。
+- `npx evenhub-simulator http://localhost:5173` 只看布局，不经 BLE。
 
 QR sideload 是否跳过 `app.json` `network` 白名单：**文档未说明**（Local Testing 写 “Some permission prompts are skipped during dev”，没有点名 WebSocket / 白名单）。打正式包时必须把服务器 **完整 origin** 写进 whitelist，且 **不支持通配符**。
 
@@ -209,21 +209,18 @@ Linux 本机自测不需要这条。云主机 / 公网另开安全组。
 ### 2.4 静态插件页
 
 ```bash
-cd glasses
-python -m http.server 8088 --bind 0.0.0.0
+cd glasses/app && npm install && npm run dev
 ```
 
-浏览器或 Even App 打开 `http://LAN_IP:8088/webview/index.html`。输入框默认填 `ws://` + 页面 `hostname` + `:8766`（hostname 空则 `192.168.3.2`）；非空的 `localStorage` 优先。点 Connect。灰色字是 placeholder，不是已填的值。
+遗留单文件在 `glasses/legacy/index.html`。输入框默认 `ws://` + 页面 `hostname` + `:8766`。
 
 QR sideload：
 
 ```bash
-evenhub qr --url "http://LAN_IP:8088/webview/index.html"
+evenhub qr --url "http://LAN_IP:5173"
 ```
 
-插件会从 CDN 拉 `@evenrealities/even_hub_sdk@0.0.15`（esm.sh，失败再试 jsdelivr）。**QR / 打包后的 WebView 是否放行这两个 CDN：文档未说明。** 失败时错误全文会画在手机页上（这台手机没有好用的 console）。官方推荐形态是 Vite + `npm install @evenrealities/even_hub_sdk`，本里程碑按任务做成单文件。
-
-打 `.ehpk` 时至少白名单：推送服务器 origin，以及（若仍走 CDN）`https://esm.sh`、`https://cdn.jsdelivr.net`。一条 whitelist 一项完整 origin，无通配。
+`glasses/app` 用 npm SDK，不再从 CDN 拉。打包时把推送服务器完整 origin 写入 `app.json` network whitelist（无通配）。错误全文画在手机页上。
 
 ### 2.5 为什么公网部署必须 wss
 
@@ -239,36 +236,85 @@ evenhub qr --url "http://LAN_IP:8088/webview/index.html"
 
 | 路径 | 作用 |
 | --- | --- |
-| `glasses/webview/index.html` | 单文件插件：WS、状态、调 Even 显示 API |
-| `glasses/display_server.py` | `{"text":...}` 推送服务 |
-| `glasses/fixtures/display_test.txt` | 通路冒烟夹具（中 / 日 / 混排 / 超长 / 换行） |
-| `glasses/fixtures/capacity_probe.txt` | 可计量容量阶梯（宽 / 行 / Phase1 40 字边界） |
-| `glasses/CAPACITY.md` | 容量怎么测、结果表（未测则留空） |
-| `glasses/README.md` | 本文 |
+| `glasses/app/` | 官方 `evenhub-templates/asr` 脚手架 + M3 WS / 显示（Vite+TS，勿再压成单 HTML） |
+| `glasses/legacy/index.html` | M3 单文件插件，仅作对照 |
+| `glasses/display_server.py` | WS 推送；`--policy` 走 `server/display_policy.py` |
+| `glasses/SDK_NOTES.md` | Step 0 文档结论（每条有 URL） |
+| `glasses/CAPACITY.md` | 容量阶梯怎么测 |
+| `server/display_policy.py` | 置信 / 预算 / 去重 / TTL / 长度 |
+| `server/README.md` | 策略旋钮 |
 
-`--file` 会跳过空行与 `#` 注释，并把字面量 `\n` `\t` `\\` 展开。夹具第 6 行用 `\n` 表示真实换行。
+`--file` 会跳过空行与 `#` 注释，并把字面量 `\n` `\t` `\\` 展开。
+
+## 3.1 模板客户端
+
+```bash
+cd glasses/app
+npm install
+npm run dev
+# 另一终端
+npx evenhub-simulator http://localhost:5173
+# 或真机
+npx evenhub qr --url "http://<LAN>:5173"
+```
+
+启动页 `createStartUpPageContainer` 一次（576×288 文本容器），之后只 `textContainerUpgrade`。根页双击 `shutDownPageContainer(1)`。点镜腿 = 连/断 WS。`src/asr/stt.ts` 仍是官方空 stub，M4 **不**开麦。
+
+## 3.2 模拟器（不用戴眼镜）
+
+官方包是 `@evenrealities/evenhub-simulator`，**没有**叫 `even-dev` 的官方 npm。详见 `SDK_NOTES.md` §10。
+
+```bash
+npm install -g @evenrealities/evenhub-simulator
+cd glasses/app && npm run dev
+npx evenhub-simulator http://localhost:5173
+```
+
+社区启动器（仍调官方模拟器）：
+
+```bash
+git clone https://github.com/BxNxM/even-dev.git
+cd even-dev && npm install
+APP_PATH=/path/to/hud-router/glasses/app ./start-even.sh
+```
+
+模拟器不是硬件仿真：无真实 BLE / 权限 / 后台。能看容器和 `{"text":...}` 是否上屏。
+
+## 3.3 清屏
+
+| 方案 | 文档 | 实现 |
+| --- | --- | --- |
+| hide/close text API | **文档未说明**（无此方法） | 不用 |
+| `content: ""` | **文档未说明**；项目经验：不清，旧字还在 | 不发送空串 |
+| 半角 `" "` / 全角 `U+3000` / `"\n"` | 文档未写能清 | `clear_probe.py` 可推；**硬件确认 pending** |
+| `textContainerUpgrade` 换成单字 | 文档写明 upgrade 改 content | **`clearDisplay()` 默认 `・`**（`POLICY_CLEAR_PLACEHOLDER` / localStorage `hud-router-clear-placeholder`） |
+
+TTL 到期服务器发 `{"clear":true}`，插件调用 `clearDisplay()`。
+
+```bash
+python glasses/clear_probe.py
+```
 
 ---
 
 ## 4. 已知风险
 
-- Android 锁屏 / 进后台：WS 通常断；本插件会指数退避重连（上限 10s）。iOS 文档说一般还能挂着。
-- `createStartUpPageContainer` 只能在启动时调一次；之后必须 `textContainerUpgrade`。ID/Name 不一致会静默失败。
-- 固件缺字会丢、不报错。中日覆盖以实测为准。
-- 单文件从 CDN 拉 SDK：无网、白名单、CORS 任一失败则镜片写不了；WS 状态仍会画在手机页。
-- BLE 带宽有限。本里程碑没有 TTL / 预算 / 去重。
-- 开发 QR 页锁屏后常要重新扫（Local Testing）。
-- 本机普通浏览器没有 `flutter_inappwebview`，SDK 会报桥不可用——这是预期，用来测 WS 可以，测镜片必须进 Even App。
-- QR 实机：空输入框的 placeholder 曾与正文同色，看起来像已填 `ws://192.168.1.10:8766`，Connect 却报 URL 为空。placeholder 现为灰色 `#666`，打开时写入真实默认值。
+- Android 锁屏 / 进后台：WS 通常断；指数退避重连（上限 10s）。
+- `createStartUpPageContainer` 只调一次；之后只 upgrade。notes：再 create 会 invalid 并堵约 2.1s。
+- 官方：upgrade 硬件无闪烁；rebuild 有 flicker。notes：upgrade ~83ms，rebuild ~165ms。
+- 无 hide API；空串不清。
+- BLE 固定调用成本大（见 SDK_NOTES §9）。
+- `speakerRole` 是 App 算法，不是固件身份。
 
 ---
 
 ## 5. 实测显示效果
 
-2026-09-22 本机 LAN `192.168.3.2` 对 `display_test.txt` 的「正常显示」**只是通路冒烟**：证明服务器 → 插件 → BLE → 镜片能把字送上去。它**没有**给出单行字数、一屏行数、折行后截断点，**不能**用来信任 Phase 1 的 40 字预算。
+真机量得（2026-09-22，用户）：**每行 28 个全角、最多 10 行**。此前 `display_test.txt`「正常显示」只是通路冒烟。
 
-要数字：用 `glasses/fixtures/capacity_probe.txt` + `--pause`，把结果填进 `glasses/CAPACITY.md`。未测之前表里不填猜测。
+Phase 1 输出上限已改为 28（`prompts.py` 一句 + `MAX_ANSWER_CHARS`）。策略层 >28 且 ≤56 折两行，>56 丢弃。本环境无 API key，5+5 live eval 见 `eval_reports/28char/UNAVAILABLE.md`。
 
 ```bash
 python glasses/display_server.py --file glasses/fixtures/capacity_probe.txt --pause
 ```
+

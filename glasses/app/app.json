@@ -1,0 +1,26 @@
+{
+  "package_id": "com.azhen111.hudrouter",
+  "edition": "202601",
+  "name": "HUD Router Display",
+  "version": "0.1.0",
+  "min_app_version": "2.2.7",
+  "min_sdk_version": "0.0.14",
+  "entrypoint": "index.html",
+  "permissions": [
+    {
+      "name": "g2-microphone",
+      "desc": "Kept from the official ASR template; unused on the M4 display path."
+    },
+    {
+      "name": "network",
+      "desc": "WebSocket display push from the LAN server.",
+      "whitelist": [
+        "http://192.168.3.2:8766",
+        "ws://192.168.3.2:8766",
+        "http://127.0.0.1:8766",
+        "ws://127.0.0.1:8766"
+      ]
+    }
+  ],
+  "supported_languages": ["en", "zh", "ja"]
+}

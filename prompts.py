@@ -82,7 +82,7 @@ Speakers marked UNKNOWN: judge on content alone.
 
 When you trigger, write the answer for a two-line heads-up display
 glanced at during conversation. Therefore:
-- 40 characters maximum, full-width counted as one
+- 28 characters maximum, full-width counted as one. This is one line on the display; the wearer reads it in a glance without pausing the conversation.
 - The fact first. No preamble, no "It refers to", no hedging
 - Sentence fragments are fine. Drop articles and copulas if needed
 - Same language as the last line
