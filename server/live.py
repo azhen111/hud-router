@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Phase 3 / M1 live path: G2 PCM → Deepgram → router → lens.
+"""Phase 3 live path: G2 PCM → Deepgram → aggregator → router → lens.
 
-No display_policy, no aggregator, no RAG. Each speech_final segment is one
-router turn. Mis-triggers are expected this milestone.
+No display_policy, no RAG. speech_final / silence-closed turns go to route().
+Nova-3 uses `keyterm` (not `keywords`).
 """
 
 from __future__ import annotations
@@ -27,14 +27,18 @@ for _p in (str(ROOT), str(ASR_DIR)):
 
 from colorama import Fore, Style, init as colorama_init
 
+from aggregator import AggregatedTurn, AggregatorConfig, FinalSegment, TurnAggregator
 from router import RouterConfigError, RouterResult, route
+from settings import DEFAULT_AGG_MAX_TURN_MS, DEFAULT_AGG_SILENCE_MS
 from stream import (
     DEEPGRAM_HANDSHAKE_TIMEOUT_S,
     DEEPGRAM_MODEL,
     SAMPLE_RATE,
     DeepgramPcmSession,
     fmt_session_ts,
+    listen_connect_kwargs,
     load_dotenv,
+    load_keyterms,
     parse_deepgram_result,
     require_api_key,
     ParsedAsrResult,
@@ -51,10 +55,15 @@ DEFAULT_PORT = 8766
 DEFAULT_LANG = "zh"
 DEFAULT_WEARER_NOTE = "佩戴者是软件工程师，当前对话为 IT 技术讨论"
 DEFAULT_ROUTER_TIMEOUT_MS = 1800
+DEFAULT_MIN_ROUTE_CHARS = 6
+DEFAULT_TERMS_PATH = Path(__file__).resolve().parent / "terms_zh.json"
 
 
 def locale_from_lang(lang: str) -> str:
     raw = (lang or "").strip().lower()
+    if raw in {"multi", "multilingual"}:
+        # Deepgram language=multi; router locale stays zh for this IT-meeting path.
+        return "zh"
     if raw.startswith("zh"):
         return "zh"
     if raw.startswith("ja"):
@@ -86,6 +95,11 @@ def display_speaker(raw: object) -> str:
     if lowered == "unknown":
         return "Unknown"
     return text
+
+
+def too_short_for_router(text: str, min_chars: int) -> bool:
+    """CJK and ASCII both count as len(stripped). Do not call route() if True."""
+    return len(text.strip()) < min_chars
 
 
 def parse_uplink_message(raw: object) -> tuple[bytes, str, int | None] | None:
@@ -181,6 +195,10 @@ class LiveSettings:
         router_timeout_ms: int,
         handshake_timeout_s: float,
         log_path: Path,
+        silence_ms: int,
+        min_route_chars: int,
+        keyterms: list[str],
+        terms_path: Path | None,
     ) -> None:
         self.host = host
         self.port = port
@@ -190,6 +208,10 @@ class LiveSettings:
         self.router_timeout_ms = router_timeout_ms
         self.handshake_timeout_s = handshake_timeout_s
         self.log_path = log_path
+        self.silence_ms = silence_ms
+        self.min_route_chars = min_route_chars
+        self.keyterms = keyterms
+        self.terms_path = terms_path
 
 
 class LiveSession:
@@ -214,6 +236,17 @@ class LiveSession:
         self.last_direction: int | None = None
         self.route_lock = threading.Lock()
         self.closed = False
+        self.agg = TurnAggregator(
+            AggregatorConfig(
+                silence_ms=settings.silence_ms,
+                max_turn_ms=DEFAULT_AGG_MAX_TURN_MS,
+                min_chars=1,
+                use_speech_final=True,
+            )
+        )
+        self.agg_lock = threading.Lock()
+        self._recent_finals: list[dict[str, Any]] = []
+        self._tick_task: asyncio.Task[None] | None = None
 
     def now_rel(self) -> float:
         return time.perf_counter() - self.started_perf
@@ -225,6 +258,7 @@ class LiveSession:
             on_message=self._on_dg_message,
             on_error=self._on_dg_error,
             handshake_timeout_s=self.settings.handshake_timeout_s,
+            keyterms=self.settings.keyterms or None,
         )
         session.start()
         self.dg = session
@@ -238,11 +272,9 @@ class LiveSession:
 
     def _on_dg_message(self, message: object) -> None:
         parsed = parse_deepgram_result(message)
-        if parsed is None:
+        if parsed is None or not parsed.is_final:
             return
-        if not parsed.speech_final:
-            return
-        asyncio.run_coroutine_threadsafe(self._handle_speech_final(parsed), self.loop)
+        asyncio.run_coroutine_threadsafe(self._ingest_final(parsed), self.loop)
 
     async def feed_uplink(self, raw: object) -> None:
         parsed = parse_uplink_message(raw)
@@ -254,22 +286,106 @@ class LiveSession:
         if self.dg is not None:
             self.dg.send_pcm(pcm)
 
-    async def _handle_speech_final(self, parsed: ParsedAsrResult) -> None:
+    async def _ingest_final(self, parsed: ParsedAsrResult) -> None:
+        recv_s = self.now_rel()
+        rec: dict[str, Any] = {
+            "transcript": parsed.transcript,
+            "speech_final": parsed.speech_final,
+            "is_final": parsed.is_final,
+            "asr_confidence": parsed.confidence,
+            "start_s": parsed.start_s,
+            "duration_s": parsed.duration_s,
+            "recv_s": recv_s,
+            "speakerRole": self.last_role,
+            "direction": self.last_direction,
+        }
+        self._write_record(
+            {
+                "kind": "final",
+                **rec,
+                "session_rel_s": round(recv_s, 3),
+                "ts": datetime.now().isoformat(timespec="milliseconds"),
+            }
+        )
+        print(
+            f"{fmt_session_ts(recv_s)} FINAL  {display_speaker(self.last_role)}  "
+            f"speech_final={str(parsed.speech_final).lower()}  {parsed.transcript}",
+            flush=True,
+        )
+        seg = FinalSegment(
+            text=parsed.transcript,
+            start_s=parsed.start_s,
+            duration_s=parsed.duration_s,
+            speech_final=parsed.speech_final,
+            recv_s=recv_s,
+        )
+        self._recent_finals.append(rec)
+        with self.agg_lock:
+            emitted = self.agg.push(seg)
+        await self._handle_turns(emitted)
+
+    async def _agg_ticker(self) -> None:
+        try:
+            while not self.closed:
+                await asyncio.sleep(0.05)
+                with self.agg_lock:
+                    emitted = self.agg.tick(self.now_rel())
+                if emitted:
+                    await self._handle_turns(emitted)
+        except asyncio.CancelledError:
+            return
+
+    async def _handle_turns(self, turns: list[AggregatedTurn]) -> None:
+        pending = list(self._recent_finals)
+        leftover: list[dict[str, Any]] = pending
+        for turn in turns:
+            n = max(0, int(turn.segments))
+            raws = leftover[:n]
+            leftover = leftover[n:]
+            await self._handle_one_turn(turn, raws)
+        self._recent_finals = leftover
+
+    async def _handle_one_turn(
+        self, turn: AggregatedTurn, raws: list[dict[str, Any]]
+    ) -> None:
         t0 = time.perf_counter()
         rel = self.now_rel()
         role = self.last_role
         direction = self.last_direction
         speaker = map_speaker_role(role)
+        text = turn.text
         stamp = fmt_session_ts(rel)
         print(
-            f"{stamp} {display_speaker(role)}  {parsed.transcript}",
+            f"{stamp} {display_speaker(role)}  ({turn.segments} segs)  {text}",
             flush=True,
         )
+        if too_short_for_router(text, self.settings.min_route_chars):
+            reason = (
+                f"too short ({len(text.strip())} < {self.settings.min_route_chars})"
+            )
+            print(f"{stamp}   → skip  reason: {reason}", flush=True)
+            self._write_turn_jsonl(
+                turn,
+                raws,
+                role,
+                direction,
+                speaker,
+                None,
+                False,
+                False,
+                t0,
+                t0,
+                None,
+                skip_reason="too_short",
+                error=reason,
+            )
+            return
+
         payload: dict[str, object] = {
             "recent_turns": [
                 {
                     "speaker": speaker,
-                    "text": parsed.transcript,
+                    "text": text,
                     "ts": time.time(),
                 }
             ],
@@ -285,8 +401,9 @@ class LiveSession:
             )
         except RouterConfigError as exc:
             print(f"{stamp}   → skip  router config: {exc}", flush=True)
-            self._write_jsonl(
-                parsed,
+            self._write_turn_jsonl(
+                turn,
+                raws,
                 role,
                 direction,
                 speaker,
@@ -296,6 +413,7 @@ class LiveSession:
                 t0,
                 t_route,
                 None,
+                skip_reason="router_config",
                 error=str(exc),
             )
             await self._send_json({"error": str(exc)})
@@ -303,13 +421,16 @@ class LiveSession:
         router_ms = (time.perf_counter() - t_route) * 1000.0
         pushed = False
         t_down: float | None = None
+        skip_reason: str | None = None
         if timed_out:
+            skip_reason = "router_timeout"
             print(
                 f"{fmt_session_ts(self.now_rel())}   → skip  reason: router timeout "
                 f"({self.settings.router_timeout_ms}ms)",
                 flush=True,
             )
         elif result is None:
+            skip_reason = "router_error"
             print(
                 f"{fmt_session_ts(self.now_rel())}   → skip  reason: router error",
                 flush=True,
@@ -329,6 +450,7 @@ class LiveSession:
             t_down = (time.perf_counter() - t_down) * 1000.0
             pushed = True
         else:
+            skip_reason = "none"
             reason = result.reason if result is not None else "none"
             conf = result.confidence if result is not None else 0.0
             print(
@@ -336,8 +458,9 @@ class LiveSession:
                 f"conf={conf:.2f}  reason: {reason}",
                 flush=True,
             )
-        self._write_jsonl(
-            parsed,
+        self._write_turn_jsonl(
+            turn,
+            raws,
             role,
             direction,
             speaker,
@@ -347,6 +470,7 @@ class LiveSession:
             t0,
             t_route,
             t_down,
+            skip_reason=skip_reason,
         )
 
     def _route_once(
@@ -355,9 +479,15 @@ class LiveSession:
         with self.route_lock:
             return route_with_timeout(payload, timeout_s)
 
-    def _write_jsonl(
+    def _write_record(self, record: dict[str, Any]) -> None:
+        with self.jsonl_lock:
+            self.jsonl.write(json.dumps(record, ensure_ascii=False) + "\n")
+            self.jsonl.flush()
+
+    def _write_turn_jsonl(
         self,
-        parsed: ParsedAsrResult,
+        turn: AggregatedTurn,
+        raws: list[dict[str, Any]],
         role: str,
         direction: int | None,
         speaker: str,
@@ -367,15 +497,19 @@ class LiveSession:
         t0: float,
         t_route: float,
         downlink_ms: float | None,
+        skip_reason: str | None = None,
         error: str | None = None,
     ) -> None:
-        record: dict[str, object] = {
+        record: dict[str, Any] = {
+            "kind": "turn",
             "ts": datetime.now().isoformat(timespec="milliseconds"),
             "session_rel_s": round(self.now_rel(), 3),
-            "transcript": parsed.transcript,
-            "speech_final": parsed.speech_final,
-            "is_final": parsed.is_final,
-            "asr_confidence": parsed.confidence,
+            "transcript": turn.text,
+            "aggregated_text": turn.text,
+            "raw_finals": [r.get("transcript") for r in raws],
+            "raw_final_records": raws,
+            "segments": turn.segments,
+            "duration_ms": turn.duration_ms,
             "speakerRole": role,
             "direction": direction,
             "speaker": speaker,
@@ -388,11 +522,11 @@ class LiveSession:
                 "total_ms": round((time.perf_counter() - t0) * 1000.0, 1),
             },
         }
+        if skip_reason:
+            record["skip_reason"] = skip_reason
         if error:
             record["error"] = error
-        with self.jsonl_lock:
-            self.jsonl.write(json.dumps(record, ensure_ascii=False) + "\n")
-            self.jsonl.flush()
+        self._write_record(record)
 
     async def _send_json(self, obj: dict[str, Any]) -> None:
         if self.closed:
@@ -402,7 +536,25 @@ class LiveSession:
         except Exception as exc:
             print(f"[live] send failed: {exc}", file=sys.stderr, flush=True)
 
+    async def aclose(self) -> None:
+        self.closed = True
+        if self._tick_task is not None:
+            self._tick_task.cancel()
+            self._tick_task = None
+        leftover: list[AggregatedTurn]
+        with self.agg_lock:
+            leftover = self.agg.flush(self.now_rel())
+        if leftover:
+            await self._handle_turns(leftover)
+        if self.dg is not None:
+            try:
+                self.dg.close()
+            except Exception:
+                pass
+            self.dg = None
+
     def close(self) -> None:
+        """Sync fallback when not on the session loop."""
         self.closed = True
         if self.dg is not None:
             try:
@@ -423,7 +575,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--host", default=None, help=f"bind host (default {DEFAULT_HOST})")
     p.add_argument("--port", type=int, default=None, help=f"WS port (default {DEFAULT_PORT})")
-    p.add_argument("--lang", default=None, help=f"Deepgram language (default {DEFAULT_LANG})")
+    p.add_argument(
+        "--lang",
+        default=None,
+        help=f"Deepgram language: zh (default) or multi",
+    )
     p.add_argument(
         "--wearer-note",
         default=None,
@@ -440,6 +596,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         default=None,
         help=f"Deepgram handshake timeout (default {DEEPGRAM_HANDSHAKE_TIMEOUT_S:.0f}s)",
+    )
+    p.add_argument(
+        "--silence-ms",
+        type=int,
+        default=None,
+        help=f"aggregator silence (default {DEFAULT_AGG_SILENCE_MS}; env AGG_SILENCE_MS)",
+    )
+    p.add_argument(
+        "--min-route-chars",
+        type=int,
+        default=None,
+        help=f"skip route() if aggregated text shorter (default {DEFAULT_MIN_ROUTE_CHARS})",
+    )
+    p.add_argument(
+        "--terms",
+        default=None,
+        help=f"keyterm JSON path (default {DEFAULT_TERMS_PATH})",
+    )
+    p.add_argument(
+        "--no-keyterms",
+        action="store_true",
+        help="do not send keyterm (A/B baseline)",
     )
     p.add_argument("--log", default=None, help="jsonl path (default live_YYYYmmdd_HHMMSS.jsonl)")
     return p.parse_args(argv)
@@ -465,11 +643,30 @@ def build_settings(args: argparse.Namespace) -> LiveSettings:
         if args.handshake_timeout_s is not None
         else float(_env("DEEPGRAM_HANDSHAKE_TIMEOUT_S", str(DEEPGRAM_HANDSHAKE_TIMEOUT_S)))
     )
+    silence_ms = (
+        args.silence_ms
+        if args.silence_ms is not None
+        else int(_env("AGG_SILENCE_MS", str(DEFAULT_AGG_SILENCE_MS)))
+    )
+    min_route = (
+        args.min_route_chars
+        if args.min_route_chars is not None
+        else int(_env("MIN_ROUTE_CHARS", str(DEFAULT_MIN_ROUTE_CHARS)))
+    )
     if args.log:
         log_path = Path(args.log)
     else:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_path = Path(f"live_{stamp}.jsonl")
+    terms_path: Path | None
+    keyterms: list[str]
+    if getattr(args, "no_keyterms", False):
+        terms_path = None
+        keyterms = []
+    else:
+        raw_terms = args.terms if args.terms is not None else _env("LIVE_TERMS_PATH", "")
+        terms_path = Path(raw_terms) if raw_terms else DEFAULT_TERMS_PATH
+        keyterms = load_keyterms(terms_path) if terms_path.is_file() else []
     return LiveSettings(
         host=host,
         port=port,
@@ -478,10 +675,41 @@ def build_settings(args: argparse.Namespace) -> LiveSettings:
         router_timeout_ms=timeout_ms,
         handshake_timeout_s=handshake,
         log_path=log_path,
+        silence_ms=silence_ms,
+        min_route_chars=min_route,
+        keyterms=keyterms,
+        terms_path=terms_path,
     )
 
 
+def log_startup(settings: LiveSettings) -> None:
+    n = len(settings.keyterms)
+    src = str(settings.terms_path) if settings.terms_path else "(disabled)"
+    print(
+        f"live  ws://{settings.host}:{settings.port}  "
+        f"dg={DEEPGRAM_MODEL} lang={settings.lang} locale={settings.locale}  "
+        f"audio={SAMPLE_RATE}Hz mono s16le  "
+        f"router_timeout={settings.router_timeout_ms}ms  "
+        f"dg_handshake={settings.handshake_timeout_s:.0f}s  "
+        f"agg_silence={settings.silence_ms}ms  "
+        f"min_route_chars={settings.min_route_chars}",
+        flush=True,
+    )
+    print(
+        f"keyterms={n} from {src}  "
+        "(nova-3 uses keyterm, not keywords; see https://developers.deepgram.com/docs/keyterm)",
+        flush=True,
+    )
+    print(f"wearer_note={settings.wearer_note!r}", flush=True)
+    print(f"jsonl={settings.log_path}", flush=True)
+    print("Connect glasses/app, then speak. Ctrl-C to stop.\n", flush=True)
+
+
 async def run_server(settings: LiveSettings, dg_key: str) -> None:
+    # Fail-fast: live connect kwargs must never include keywords.
+    probe = listen_connect_kwargs(settings.lang, settings.keyterms or None)
+    if "keywords" in probe:
+        raise RuntimeError("nova-3 connect must not set keywords")
     jsonl = settings.log_path.open("a", encoding="utf-8")
     jsonl_lock = threading.Lock()
     started = time.perf_counter()
@@ -501,23 +729,14 @@ async def run_server(settings: LiveSettings, dg_key: str) -> None:
                 return
             await websocket.send(json.dumps({"status": "deepgram_ready"}, ensure_ascii=False))
             print(f"[live] Deepgram ready for {addr}", flush=True)
+            session._tick_task = asyncio.create_task(session._agg_ticker())
             async for message in websocket:
                 await session.feed_uplink(message)
         finally:
-            session.close()
+            await session.aclose()
             print(f"[conn] - {addr}", flush=True)
 
-    print(
-        f"live  ws://{settings.host}:{settings.port}  "
-        f"dg={DEEPGRAM_MODEL} lang={settings.lang} locale={settings.locale}  "
-        f"audio={SAMPLE_RATE}Hz mono s16le  "
-        f"router_timeout={settings.router_timeout_ms}ms  "
-        f"dg_handshake={settings.handshake_timeout_s:.0f}s",
-        flush=True,
-    )
-    print(f"wearer_note={settings.wearer_note!r}", flush=True)
-    print(f"jsonl={settings.log_path}", flush=True)
-    print("Connect glasses/app, then speak. Ctrl-C to stop.\n", flush=True)
+    log_startup(settings)
     try:
         async with serve(handler, settings.host, settings.port):
             await asyncio.Future()

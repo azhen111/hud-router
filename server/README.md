@@ -1,12 +1,22 @@
 # server — Phase 3 live 通路 + 显示策略
 
-## Phase 3 / Milestone 1 — 最小直播通路
+## Phase 3 — live 通路（ASR 加固）
 
-`server/live.py`：眼镜 PCM 上行 → Deepgram 流式 ASR → 每个 `speech_final=true` 立刻 `route()` → `{"text": answer}` 下行上镜。
+`server/live.py`：眼镜 PCM 上行 → Deepgram nova-3（`keyterm`）→ `asr/aggregator.py`（默认静音 800ms）→ 短句过滤 → `route()` → `{"text": answer}` 下行上镜。
 
-**不做：** display_policy（无预算 / 置信档 / TTL / 去重）、aggregator、RAG。误触发这一轮可以，用来看真实行为。
+**不做：** display_policy、RAG。`router.py` / `prompts.py` / `testcases*` 不动。
 
 **不要和** `glasses/display_server.py` **抢同一端口**（默认都是 8766）。
+
+### nova-3 用 keyterm，不是 keywords
+
+Nova-3 **不支持** `keywords`（HTTP 400 / 流式 WS 静默断开）。必须用 **`keyterm`**：纯词、不要 `:权重`。多个词重复参数 `keyterm=REST&keyterm=Kafka`。
+
+- Keyterm Prompting: https://developers.deepgram.com/docs/keyterm
+- Keywords 页写明 Nova-3 必须改用 Keyterm：https://developers.deepgram.com/docs/keywords
+- streaming nova-3 + keywords 失败：https://github.com/deepgram/deepgram-js-sdk/issues/474
+
+词表：`server/terms_zh.json`（约 50 个中英 IT 词）。编辑该 JSON 数组即可；不要写 `term:1.5`，不要逗号拼一条。启动时打一行 `keyterms=N from <path> (nova-3 uses keyterm, not keywords)`。`--no-keyterms` 可关，方便 A/B。
 
 ### 怎么跑（戴镜）
 
@@ -19,6 +29,8 @@ export ROUTER_MODEL=...
 # 可选
 export OPENAI_BASE_URL=https://...
 export LIVE_LANG=zh
+export AGG_SILENCE_MS=800
+export MIN_ROUTE_CHARS=6
 export LIVE_WEARER_NOTE='佩戴者是软件工程师，当前对话为 IT 技术讨论'
 ```
 
@@ -27,7 +39,10 @@ export LIVE_WEARER_NOTE='佩戴者是软件工程师，当前对话为 IT 技术
 ```bash
 python server/live.py
 python server/live.py --host 0.0.0.0 --port 8766 --lang zh
+python server/live.py --lang multi --log live_multi.jsonl
 ```
+
+重启：Ctrl-C 停掉旧进程后再跑同一条命令。改 `terms_zh.json` 后必须重启才会进 Deepgram 握手。
 
 3. 眼镜插件：
 
@@ -44,9 +59,9 @@ npx evenhub-simulator http://localhost:5173
 4. 手机页填 `ws://<电脑LAN>:8766`（灰色占位符不是值），点 **Connect**。
    `app.json` `network.whitelist` 须含该 origin（QR 开发态可能跳过，正式包必须写全，无通配符）。
 5. 状态出现 `deepgram_ready` 后开麦。镜腿单击 = 暂停/恢复采集；双击 = `shutDownPageContainer(1)` 退出。
-6. 对面问技术问题。终端和 `live_*.jsonl` 各记一条 final；`should_respond=true` 时镜片出字。
+6. 对面问技术问题。jsonl 里 `kind=final` 是原始 FINAL，`kind=turn` 是聚合后的文本 + router。`should_respond=true` 时镜片出字。短于 `--min-route-chars`（默认 6）的聚合句 `skip_reason=too_short`，不调 OpenAI。
 
-物理验收（戴上 G2、看见字）由使用者完成。本环境不编造硬件结果。
+物理验收（戴上 G2、看见字）由使用者完成。本环境不编造硬件结果。A/B 清单：`server/ASR_EVAL.md`。朗读稿：`server/fixtures/it_questions_20.txt`。
 
 ### 终端
 
@@ -59,9 +74,23 @@ npx evenhub-simulator http://localhost:5173
 [00:18.90]   → skip  conf=0.95  reason: backchannel
 ```
 
+### zh vs multi（同一批话）
+
+没有离线音频夹具。戴镜对同一批 `server/fixtures/it_questions_20.txt` 各录一份 jsonl：
+
+```bash
+python server/live.py --lang zh --log live_zh.jsonl
+# 朗读 20 题，Ctrl-C
+python server/live.py --lang multi --log live_multi.jsonl
+# 同样 20 题，同样语速/距离
+```
+
+对比两份里 `kind=turn` 的 `raw_finals` / `aggregated_text` / `pushed`。`language=multi` 时 router `locale` 仍是 `zh`（这场是中文 IT 会）。
+
 ### jsonl
 
-每个 `speech_final` 一段一行：`transcript`、`speakerRole`、`direction`、完整 `router` 返回、`timings`（router / downlink / total）。这是以后调参的唯一证据。
+- `kind=final`：Deepgram 一条 is_final（含 `speech_final`）。
+- `kind=turn`：aggregator 关窗后的一句：`aggregated_text`、`raw_finals`、`speakerRole`、`direction`、完整 `router`、`timings`、`skip_reason`。
 
 ### 旋钮
 
@@ -71,11 +100,15 @@ npx evenhub-simulator http://localhost:5173
 | --- | --- | --- | --- |
 | host | `0.0.0.0` | `--host` / `LIVE_HOST` | 监听地址 |
 | port | `8766` | `--port` / `LIVE_PORT` | WebSocket 端口（与插件 URL 一致） |
-| lang | `zh` | `--lang` / `LIVE_LANG` | Deepgram 语言（`zh` / `ja` / …） |
-| locale | 由 lang 推导 | （随 lang） | 交给 `route()` 的 `locale` |
+| lang | `zh` | `--lang` / `LIVE_LANG` | Deepgram `zh` 或 `multi` |
+| locale | 由 lang 推导（`multi`→`zh`） | （随 lang） | 交给 `route()` 的 `locale` |
 | wearer_note | 佩戴者是软件工程师，当前对话为 IT 技术讨论 | `--wearer-note` / `LIVE_WEARER_NOTE` | 每段都带 |
 | router timeout | 1800 ms | `--router-timeout-ms` / `LIVE_ROUTER_TIMEOUT_MS` | 超时放弃，不重试 |
 | DG handshake | 60 s | `--handshake-timeout-s` / `DEEPGRAM_HANDSHAKE_TIMEOUT_S` | Deepgram listen 握手 |
+| agg silence | 800 ms | `--silence-ms` / `AGG_SILENCE_MS` | `TurnAggregator` 静音关窗（现有 aggregator，不另写一套） |
+| min route chars | 6 | `--min-route-chars` / `MIN_ROUTE_CHARS` | 聚合后短于此不调 OpenAI |
+| keyterm 词表 | `server/terms_zh.json` | `--terms` / `LIVE_TERMS_PATH` | nova-3 `keyterm` 列表 |
+| 关闭 keyterm | 关 | `--no-keyterms` | A/B 基线 |
 | log | `live_<时间>.jsonl` | `--log` | 会话日志路径 |
 | WS URL（插件） | `ws://<页面hostname>:8766` | 手机输入框 / localStorage | 一条连接既上行 PCM 也下行文本 |
 

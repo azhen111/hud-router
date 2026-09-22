@@ -85,9 +85,11 @@ Aggregator only (constructed FINAL sequences; no mic): silence, max-turn, min-ch
 
 ## Deepgram model (M1/M2 share `nova-3`)
 
-**`nova-3`** — current general-purpose streaming ASR (not Flux). Supports `zh` and `ja`. Connect sets `model`, `language`, `encoding=linear16`, `sample_rate=16000`, `channels=1`, `interim_results=true`, `punctuate=true`. **Endpointing is not tuned.**
+**`nova-3`** — current general-purpose streaming ASR (not Flux). Supports `zh`, `ja`, and `language=multi`. Connect sets `model`, `language`, `encoding=linear16`, `sample_rate=16000`, `channels=1`, `interim_results=true`, `punctuate=true`. **Endpointing is not tuned.**
 
-`DeepgramPcmSession` in `stream.py` is the same listen options without a mic (PCM bytes in). `server/live.py` uses it. Handshake wait is 60s. M1/M2 CLI (`run_mic_deepgram_session`) is unchanged.
+Nova-3 does **not** support `keywords` (HTTP 400 / silent WS close). Live path passes repeated **`keyterm`** (plain terms, no intensifier). Docs: https://developers.deepgram.com/docs/keyterm — Keywords page says Nova-3 must use Keyterm Prompting: https://developers.deepgram.com/docs/keywords
+
+`DeepgramPcmSession` in `stream.py` is the same listen options without a mic (PCM bytes in). `server/live.py` uses it and may pass `keyterm`. Handshake wait is 60s. M1/M2 CLI (`run_mic_deepgram_session`) is unchanged unless you pass keyterms.
 
 ## Install
 

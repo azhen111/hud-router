@@ -1,0 +1,22 @@
+# 20 道中文 IT 会话语，给戴镜 A/B 朗读用。不要当评测答案。
+# 同一批各跑一遍 --lang zh 和 --lang multi，jsonl 分开存。
+这个接口保证幂等吗
+REST 和 GraphQL 怎么选
+Redis 缓存穿透怎么防
+Kubernetes 里 Pod 重启了怎么办
+Kafka 消息会丢吗
+gRPC 和 HTTP 有什么区别
+JWT 过期了怎么刷新
+OAuth 的授权码流程是什么
+CDN 回源失败会怎样
+SSR 和 CSR 哪个适合这个页
+Svelte 的响应式是怎么做的
+RAG 的检索用什么向量库
+微服务之间怎么做鉴权
+网关限流用的什么算法
+Docker 镜像太大怎么瘦身
+PostgreSQL 和 MySQL 怎么选
+CI/CD 流水线挂了怎么查
+WebSocket 断线怎么重连
+熔断和限流有什么区别
+灰度发布怎么回滚

@@ -404,9 +404,51 @@ def require_api_key() -> str:
     return key
 
 
-def listen_connect_kwargs(language: str) -> dict[str, Any]:
-    """Shared nova-3 / 16 kHz mono s16le options for M1 and live PCM."""
-    return {
+def load_keyterms(path: Path) -> list[str]:
+    """Load plain keyterm strings. Nova-3 must not receive `keywords` or weights.
+
+    https://developers.deepgram.com/docs/keyterm
+    Keywords page: Nova-3 must use Keyterm Prompting (not `keywords`).
+    """
+    raw_obj: object = json.loads(path.read_text(encoding="utf-8"))
+    items: list[object]
+    if isinstance(raw_obj, list):
+        items = raw_obj
+    elif isinstance(raw_obj, dict):
+        inner = raw_obj.get("keyterm") or raw_obj.get("keyterms") or raw_obj.get("terms")
+        items = list(inner) if isinstance(inner, list) else []
+    else:
+        items = []
+    terms: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        term: str = str(item).strip()
+        if not term or term.startswith("#"):
+            continue
+        # Drop legacy keywords intensifiers (term:1.5). keyterm is plain only.
+        if ":" in term:
+            maybe_w = term.rsplit(":", 1)[-1].lstrip("+-")
+            if maybe_w.replace(".", "", 1).isdigit():
+                continue
+        if term in seen:
+            continue
+        seen.add(term)
+        terms.append(term)
+    return terms
+
+
+def listen_connect_kwargs(
+    language: str,
+    keyterms: list[str] | None = None,
+) -> dict[str, Any]:
+    """Shared nova-3 / 16 kHz mono s16le options for M1 and live PCM.
+
+    Nova-3 does **not** support `keywords` (HTTP 400 / silent WS close).
+    Pass repeated `keyterm` (plain terms, no intensifier). Never set `keywords`.
+    https://developers.deepgram.com/docs/keyterm
+    https://developers.deepgram.com/docs/keywords
+    """
+    kwargs: dict[str, Any] = {
         "model": DEEPGRAM_MODEL,
         "language": language,
         "encoding": "linear16",
@@ -415,6 +457,9 @@ def listen_connect_kwargs(language: str) -> dict[str, Any]:
         "interim_results": True,
         "punctuate": True,
     }
+    if keyterms:
+        kwargs["keyterm"] = list(keyterms)
+    return kwargs
 
 
 class DeepgramPcmSession:
@@ -432,12 +477,14 @@ class DeepgramPcmSession:
         on_message: Callable[[object], None],
         on_error: Callable[[object], None] | None = None,
         handshake_timeout_s: float = DEEPGRAM_HANDSHAKE_TIMEOUT_S,
+        keyterms: list[str] | None = None,
     ) -> None:
         self._api_key = api_key
         self._language = language
         self._on_message = on_message
         self._on_error = on_error
         self._handshake_timeout_s = handshake_timeout_s
+        self._keyterms = list(keyterms) if keyterms else []
         self._halt = threading.Event()
         self._audio_q: queue.Queue[bytes | None] = queue.Queue()
         self._cm: Any = None
@@ -448,7 +495,9 @@ class DeepgramPcmSession:
 
     def start(self) -> None:
         client: DeepgramClient = DeepgramClient(api_key=self._api_key)
-        self._cm = client.listen.v1.connect(**listen_connect_kwargs(self._language))
+        self._cm = client.listen.v1.connect(
+            **listen_connect_kwargs(self._language, self._keyterms or None)
+        )
         box: list[tuple[str, Any]] = []
 
         def _enter() -> None:
