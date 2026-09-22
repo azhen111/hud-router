@@ -7,6 +7,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from evaluate import CaseResult, TestCase, render_report
 from prompts import ROUTER_SYSTEM_PROMPT
 from router import (
     MAX_ANSWER_CHARS,
@@ -40,6 +41,60 @@ class TestOriginalAnswer(unittest.TestCase):
         self.assertEqual(public["original_answer"], long_answer)
         self.assertEqual(public["truncated_to_none"], True)
 
+    def test_exactly_max_chars_not_truncated(self) -> None:
+        text = "Y" * MAX_ANSWER_CHARS
+        result = normalize_result(
+            {
+                "should_respond": True,
+                "confidence": 0.9,
+                "kind": "answer",
+                "reason": "fact",
+                "answer": text,
+                "needs_more_context": False,
+            }
+        )
+        self.assertFalse(result.truncated_to_none)
+        self.assertTrue(result.should_respond)
+        self.assertEqual(result.answer, text)
+        self.assertEqual(result.original_answer, "")
+
+    def test_evaluate_report_shows_original_answer(self) -> None:
+        long_answer = "Z" * (MAX_ANSWER_CHARS + 3)
+        result = normalize_result(
+            {
+                "should_respond": True,
+                "confidence": 0.9,
+                "kind": "answer",
+                "reason": "fact",
+                "answer": long_answer,
+                "needs_more_context": False,
+            }
+        )
+        case = TestCase(
+            id=9,
+            locale="ja",
+            turns=[("OTHER", "what")],
+            expect=True,
+            note="over",
+            needs_more_context=None,
+            kind=None,
+            raw={},
+        )
+        report = render_report(
+            [CaseResult(case=case, result=result, latency_ms=1.0, correct=False)],
+            color=False,
+        )
+        self.assertIn(f"original_answer={long_answer!r}", report)
+        model_line = next(
+            line[len("model=") :]
+            for line in report.splitlines()
+            if line.startswith("model={")
+        )
+        dumped = json.loads(model_line)
+        self.assertEqual(dumped["original_answer"], long_answer)
+        self.assertTrue(dumped["truncated_to_none"])
+        self.assertIn("Legend: `original_answer`", report)
+
     def test_original_answer_empty_when_not_truncated(self) -> None:
         result = normalize_result(
             {
@@ -71,7 +126,7 @@ class TestOriginalAnswer(unittest.TestCase):
         self.assertEqual(result.original_answer, "")
 
     def test_route_completion_fn_smoke(self) -> None:
-        long_answer = "这是一段超过二十八个字的模型回答会被清空所以必须保留原文。"
+        long_answer = "超限原文" + ("字" * (MAX_ANSWER_CHARS - 2))
 
         def fake_complete(_messages: list[dict[str, str]]) -> str:
             return json.dumps(
@@ -176,7 +231,8 @@ class TestPromptAppend(unittest.TestCase):
         )
         self.assertIn(bullet, section)
         self.assertTrue(section.rstrip().endswith(bullet))
-        self.assertIn("28 characters maximum", section)
+        self.assertIn("56 characters maximum", section)
+        self.assertIn("This is at most two lines on the display", section)
 
 
 if __name__ == "__main__":

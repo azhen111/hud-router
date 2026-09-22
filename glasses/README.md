@@ -312,7 +312,7 @@ python glasses/clear_probe.py
 
 真机量得（2026-09-22，用户）：**每行 28 个全角、最多 10 行**。此前 `display_test.txt`「正常显示」只是通路冒烟。
 
-Phase 1 输出上限已改为 28（`prompts.py` 一句 + `MAX_ANSWER_CHARS`）。策略层 >28 且 ≤56 折两行，>56 丢弃。本环境无 API key，5+5 live eval 见 `eval_reports/28char/UNAVAILABLE.md`。
+Phase 1 输出上限现为 56（`prompts.py` 一句 + `MAX_ANSWER_CHARS`；最多两行）。策略层 `POLICY_MAX_CHARS=56`：>56 才丢弃；`POLICY_ONE_LINE_CHARS=28` 只折行，29–56 不丢。本环境无 API key，5+5 live eval 见 `eval_reports/28char/UNAVAILABLE.md`。
 
 ```bash
 python glasses/display_server.py --file glasses/fixtures/capacity_probe.txt --pause

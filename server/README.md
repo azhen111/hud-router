@@ -41,8 +41,9 @@ python glasses/display_server.py --policy --policy-config server/config.example.
 | `POLICY_DEDUP_WINDOW` | 10 | 最近已推条数 |
 | `POLICY_DEDUP_THRESHOLD` | 0.85 | 规范化后精确或字符相似度 ≥ 此值丢弃，**不占预算** |
 | `POLICY_TTL_MS` | 10000 | 独立定时器到期 `clearDisplay`；新推送重置 |
-| `POLICY_MAX_CHARS` | 28 | 一行；>28 且 ≤56 折两行；>56 丢弃并计数 |
+| `POLICY_MAX_CHARS` | 56 | 硬上限：`answer_char_len` > 56 才丢弃并计数。29–56 **不丢** |
+| `POLICY_ONE_LINE_CHARS` | 28 | 可选折行阈值：≤28 一行，29–56 在 28 处折成两行（不是丢弃） |
 | `POLICY_HINT_TEXT` | `・?` | hint 档显示 |
 | `POLICY_CLEAR_PLACEHOLDER` | `・` | 清屏占位（无 hide API） |
 
-长度按 Unicode code point（`len`），与 Phase 1 一致。去重：NFKC + 去空白 + lower，再 `SequenceMatcher.ratio()`。
+长度按 Unicode code point（`len`），与 Phase 1 `MAX_ANSWER_CHARS=56` 一致。`POLICY_MAX_CHARS` 是丢弃上限，不是单行宽；单行折行用 `POLICY_ONE_LINE_CHARS`（默认 28）。去重：NFKC + 去空白 + lower，再 `SequenceMatcher.ratio()`。

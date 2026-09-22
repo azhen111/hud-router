@@ -2,7 +2,7 @@
 
 `evaluate.py` 需要 `OPENAI_API_KEY` 与 `ROUTER_MODEL`。本环境没有这些变量，**5+5 次 live eval 未跑**。
 
-Follow-up（original_answer / max_retries=0 / prompt append）同样未跑 live eval。父环境 pull 后请本地跑 5× `testcases.jsonl` + 5× `testcases_zh_it.jsonl`。
+Follow-up（56-char limit / original_answer / max_retries=0）同样未跑 live eval。父环境 pull 后请本地跑 5× `testcases.jsonl` + 5× `testcases_zh_it.jsonl`。
 
 配置后：
 

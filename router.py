@@ -16,7 +16,7 @@ from openai import OpenAI
 from prompts import ROUTER_SYSTEM_PROMPT, assemble_user_message, normalize_speaker
 
 MAX_TURNS: Final[int] = 6
-MAX_ANSWER_CHARS: Final[int] = 28  # full-width = 1 (Unicode code points)
+MAX_ANSWER_CHARS: Final[int] = 56  # full-width = 1 (Unicode code points); two G2 lines
 ALLOWED_KINDS: Final[frozenset[str]] = frozenset(
     {"answer", "term", "number", "translation", "none"}
 )
@@ -76,9 +76,11 @@ class RouterResult:
             "kind": self.kind,
             "reason": self.reason,
             "answer": self.answer,
+            "original_answer": (
+                self.original_answer if self.truncated_to_none else ""
+            ),
             "needs_more_context": self.needs_more_context,
             "truncated_to_none": self.truncated_to_none,
-            "original_answer": self.original_answer if self.truncated_to_none else "",
         }
         if self.call_timing is not None:
             payload["call_timing"] = dict(self.call_timing)
@@ -288,7 +290,7 @@ def normalize_result(raw: Mapping[str, Any]) -> RouterResult:
     truncated_to_none: bool = False
     original_answer: str = ""
     if over_length:
-        # Do not truncate-and-keep: a >28 answer is a failed trigger.
+        # Do not truncate-and-keep: a >56 answer is a failed trigger.
         # Keep the pre-clear text so evaluate/reports can show what the
         # model actually wrote (id=9 / id=29 were blank without this).
         original_answer = answer

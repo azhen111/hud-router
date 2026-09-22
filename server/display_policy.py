@@ -26,7 +26,8 @@ DEFAULT_PREEMPT_MARGIN = 0.1
 DEFAULT_DEDUP_WINDOW = 10
 DEFAULT_DEDUP_THRESHOLD = 0.85
 DEFAULT_TTL_MS = 10_000
-DEFAULT_MAX_CHARS = 28
+DEFAULT_MAX_CHARS = 56  # drop only when answer_char_len > this (two G2 lines)
+DEFAULT_ONE_LINE_CHARS = 28  # wrap hint; 29–56 stay two lines, not dropped
 DEFAULT_HINT_TEXT = "・?"
 DEFAULT_CLEAR_PLACEHOLDER = "・"
 
@@ -81,6 +82,7 @@ class PolicySettings:
     dedup_threshold: float = DEFAULT_DEDUP_THRESHOLD
     ttl_ms: int = DEFAULT_TTL_MS
     max_chars: int = DEFAULT_MAX_CHARS
+    one_line_chars: int = DEFAULT_ONE_LINE_CHARS
     hint_text: str = DEFAULT_HINT_TEXT
     clear_placeholder: str = DEFAULT_CLEAR_PLACEHOLDER
 
@@ -117,6 +119,9 @@ def load_policy_settings(
         ),
         ttl_ms=g("POLICY_TTL_MS", "ttl_ms", DEFAULT_TTL_MS, _as_int),
         max_chars=g("POLICY_MAX_CHARS", "max_chars", DEFAULT_MAX_CHARS, _as_int),
+        one_line_chars=g(
+            "POLICY_ONE_LINE_CHARS", "one_line_chars", DEFAULT_ONE_LINE_CHARS, _as_int
+        ),
         hint_text=str(
             _pick(
                 getattr(cli, "hint_text", None) if cli is not None else None,
@@ -146,6 +151,7 @@ def add_policy_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--dedup-threshold", dest="dedup_threshold", type=float, default=None)
     p.add_argument("--ttl-ms", dest="ttl_ms", type=int, default=None)
     p.add_argument("--max-chars", dest="max_chars", type=int, default=None)
+    p.add_argument("--one-line-chars", dest="one_line_chars", type=int, default=None)
     p.add_argument("--hint-text", dest="hint_text", default=None)
     p.add_argument("--clear-placeholder", dest="clear_placeholder", default=None)
     p.add_argument("--policy-config", dest="policy_config", default=None)
@@ -179,12 +185,22 @@ def char_similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
-def format_length(text: str, max_chars: int) -> tuple[str | None, str]:
+def format_length(
+    text: str,
+    max_chars: int,
+    one_line_chars: int | None = None,
+) -> tuple[str | None, str]:
+    """Keep text up to max_chars; drop only when longer.
+
+    `one_line_chars` is a wrap hint (default 28). 29–56 stay two lines and
+    are not dropped when max_chars is 56.
+    """
     n = len(text)
-    if n > max_chars * 2:
-        return None, "drop_length"
     if n > max_chars:
-        return text[:max_chars] + "\n" + text[max_chars:], "two_line"
+        return None, "drop_length"
+    wrap_at = DEFAULT_ONE_LINE_CHARS if one_line_chars is None else one_line_chars
+    if wrap_at > 0 and wrap_at < max_chars and n > wrap_at:
+        return text[:wrap_at] + "\n" + text[wrap_at:], "two_line"
     return text, "one_line"
 
 
@@ -241,7 +257,9 @@ class DisplayPolicy:
         now = cand.ts_ms if cand.ts_ms is not None else self.now_ms()
         self._expire_window_if_needed(now)
 
-        formatted, len_tag = format_length(cand.text, self.settings.max_chars)
+        formatted, len_tag = format_length(
+            cand.text, self.settings.max_chars, self.settings.one_line_chars
+        )
         if formatted is None:
             self._stat("drop_length")
             return PolicyDecision("drop", "over_max_two_lines", "", False)

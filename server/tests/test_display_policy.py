@@ -166,7 +166,7 @@ class Ttl(unittest.TestCase):
 
 class Length(unittest.TestCase):
     def test_one_line_le_28(self) -> None:
-        text, tag = format_length("测" * 28, 28)
+        text, tag = format_length("测" * 28, 56, 28)
         self.assertEqual(tag, "one_line")
         self.assertEqual(text, "测" * 28)
         clock = FakeClock()
@@ -175,14 +175,22 @@ class Length(unittest.TestCase):
         self.assertEqual(d.action, "push")
         self.assertNotIn("\n", d.display_text)
 
-    def test_two_lines_29_to_56(self) -> None:
-        text, tag = format_length("测" * 40, 28)
+    def test_two_lines_29_to_56_not_dropped(self) -> None:
+        text, tag = format_length("测" * 40, 56, 28)
         self.assertEqual(tag, "two_line")
         self.assertEqual(text, "测" * 28 + "\n" + "测" * 12)
         clock = FakeClock()
         p, _ = make_policy(clock)
         d = p.consider(Candidate("测" * 40, 0.9))
         self.assertEqual(d.action, "push")
+        self.assertEqual(d.display_text.count("\n"), 1)
+
+    def test_exactly_56_pushed_as_two_lines(self) -> None:
+        clock = FakeClock()
+        p, _ = make_policy(clock)
+        d = p.consider(Candidate("测" * 56, 0.9))
+        self.assertEqual(d.action, "push")
+        self.assertEqual(d.reason, "two_line")
         self.assertEqual(d.display_text.count("\n"), 1)
 
     def test_over_56_drops(self) -> None:

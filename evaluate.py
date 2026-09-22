@@ -263,9 +263,14 @@ def render_report(rows: Sequence[CaseResult], *, color: bool) -> str:
         out.append("  none")
     else:
         for r in fn_rows:
+            oa = (
+                f"  original_answer={r.result.original_answer!r}"
+                if r.result.truncated_to_none
+                else ""
+            )
             out.append(
                 f"  id={r.case.id}  reason={r.result.reason!r}  "
-                f"note={r.case.note!r}  last={_last_text(r.case)!r}"
+                f"note={r.case.note!r}  last={_last_text(r.case)!r}{oa}"
             )
     out.append("")
     out.append(
@@ -279,6 +284,10 @@ def render_report(rows: Sequence[CaseResult], *, color: bool) -> str:
         f"  count: {suppressed_over_length_n}   "
         "(over-length model answer converted to should_respond=false / none)"
     )
+    out.append(
+        "  original_answer: pre-clear model text when truncated_to_none=true "
+        "(also in each per-case model={...} JSON)."
+    )
     if not suppressed_over_length_n:
         out.append("  none")
     else:
@@ -287,9 +296,9 @@ def render_report(rows: Sequence[CaseResult], *, color: bool) -> str:
                 out.append(
                     f"  id={r.case.id}  kind={r.result.kind}  "
                     f"truncated_to_none={r.result.truncated_to_none}  "
-                    f"original_answer={r.result.original_answer!r}  "
                     f"answer={r.result.answer!r}  (limit {MAX_ANSWER_CHARS})"
                 )
+                out.append(f"    original_answer={r.result.original_answer!r}")
     out.append("")
 
     out.append(paint("Per-case comparison", BOLD, color))
@@ -317,18 +326,22 @@ def render_report(rows: Sequence[CaseResult], *, color: bool) -> str:
         elif _suppressed_over_length(r.result):
             line = paint(line, YELLOW, color)
         out.append(line)
-        dump: str = "model=" + json.dumps(r.result.to_public_dict(), ensure_ascii=False)
+        public = r.result.to_public_dict()
+        dump: str = "model=" + json.dumps(public, ensure_ascii=False)
         if not r.correct:
             dump = paint(dump, RED, color)
         out.append(dump)
+        if r.result.truncated_to_none:
+            oa_line = (
+                f"    original_answer={r.result.original_answer!r} "
+                f"({answer_char_len(r.result.original_answer)}ch, truncated_to_none)"
+            )
+            if not r.correct:
+                oa_line = paint(oa_line, RED, color)
+            out.append(oa_line)
         extra: list[str] = []
         if r.result.answer:
             extra.append(f"answer={r.result.answer!r} ({answer_char_len(r.result.answer)}ch)")
-        if r.result.truncated_to_none and r.result.original_answer:
-            extra.append(
-                f"original_answer={r.result.original_answer!r} "
-                f"({answer_char_len(r.result.original_answer)}ch)"
-            )
         if r.result.call_timing:
             extra.append("timing=" + json.dumps(r.result.call_timing, ensure_ascii=False))
         if r.case.kind is not None and r.result.kind != r.case.kind and r.result.should_respond:
@@ -349,7 +362,8 @@ def render_report(rows: Sequence[CaseResult], *, color: bool) -> str:
         "Notes: expected `should_respond` values are not modified. "
         "`kind` / `needs_more_context` on a case are informational. "
         "`sol` = suppressed_over_length (observational, not an acceptance gate). "
-        "When sol, `original_answer` is the model's pre-clear text (answer is empty). "
+        "Legend: `original_answer` is the pre-clear model text when "
+        "`truncated_to_none=true` (Observational section + each model={...} dump). "
         "~12s spikes on earlier evals (id=8 / id=25) matched OpenAI SDK default "
         "max_retries=2 (timeout/5xx + exponential backoff); client is now "
         "max_retries=0 and degrades immediately. Per-call request_start / ttfb / "
