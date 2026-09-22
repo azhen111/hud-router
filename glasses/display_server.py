@@ -122,6 +122,13 @@ async def stdin_loop(hub: DisplayHub) -> None:
         await hub.push(text)
 
 
+async def wait_for_first_client(hub: DisplayHub) -> None:
+    print("[file] 等待至少一个客户端连接后再推送…", flush=True)
+    while not hub.clients:
+        await asyncio.sleep(0.05)
+    print(f"[file] 已连接，开始推送  {hub.status_line()}", flush=True)
+
+
 async def file_loop(hub: DisplayHub, path: Path, interval_s: float) -> None:
     lines = iter_fixture_lines(path)
     print(
@@ -131,6 +138,7 @@ async def file_loop(hub: DisplayHub, path: Path, interval_s: float) -> None:
     if not lines:
         print("[file] 没有可推送的行（全是空行或注释）", flush=True)
         return
+    await wait_for_first_client(hub)
     for i, text in enumerate(lines, start=1):
         print(f"[file] {i}/{len(lines)}", flush=True)
         await hub.push(text)
@@ -179,7 +187,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--file",
         metavar="PATH",
-        help="按行推送文件（每行一条，间隔 --interval 秒）；省略则走终端交互",
+        help="按行推送文件（等首个客户端连上后，每行一条，间隔 --interval 秒）；省略则走终端交互",
     )
     p.add_argument(
         "--interval",

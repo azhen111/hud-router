@@ -191,7 +191,7 @@ python glasses/display_server.py
 python glasses/display_server.py --file glasses/fixtures/display_test.txt
 ```
 
-默认 `0.0.0.0:8766`。终端输入一行回车 = 向所有客户端推 `{"text":"..."}`。`--file` 每隔 3 秒推一行。`--cert` + `--key` 开 wss。
+默认 `0.0.0.0:8766`。终端输入一行回车 = 向所有客户端推 `{"text":"..."}`。`--file` 等至少一个客户端连上后，每隔 3 秒推一行。`--cert` + `--key` 开 wss。
 
 依赖：`websockets`（已写入仓库根 `requirements.txt`）。标准库没有 WebSocket 服务端。
 
