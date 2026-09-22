@@ -213,7 +213,7 @@ cd glasses
 python -m http.server 8088 --bind 0.0.0.0
 ```
 
-浏览器或 Even App 打开 `http://LAN_IP:8088/webview/index.html`。输入 `ws://LAN_IP:8766`，点 Connect。URL 存在 `localStorage`。
+浏览器或 Even App 打开 `http://LAN_IP:8088/webview/index.html`。输入框默认填 `ws://` + 页面 `hostname` + `:8766`（hostname 空则 `192.168.3.2`）；非空的 `localStorage` 优先。点 Connect。灰色字是 placeholder，不是已填的值。
 
 QR sideload：
 
@@ -257,6 +257,7 @@ evenhub qr --url "http://LAN_IP:8088/webview/index.html"
 - BLE 带宽有限。本里程碑没有 TTL / 预算 / 去重。
 - 开发 QR 页锁屏后常要重新扫（Local Testing）。
 - 本机普通浏览器没有 `flutter_inappwebview`，SDK 会报桥不可用——这是预期，用来测 WS 可以，测镜片必须进 Even App。
+- QR 实机：空输入框的 placeholder 曾与正文同色，看起来像已填 `ws://192.168.1.10:8766`，Connect 却报 URL 为空。placeholder 现为灰色 `#666`，打开时写入真实默认值。
 
 ---
 

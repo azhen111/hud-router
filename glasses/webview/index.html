@@ -34,6 +34,10 @@
       color: var(--fg);
       font-size: 15px;
     }
+    input[type="text"]::placeholder {
+      color: #666;
+      opacity: 1;
+    }
     .row { display: flex; gap: 8px; margin: 10px 0 16px; }
     button {
       flex: 1;
@@ -70,7 +74,7 @@
 
   <label for="wsUrl">WebSocket URL（<code>ws://</code> 或 <code>wss://</code>）</label>
   <input id="wsUrl" type="text" autocomplete="off" spellcheck="false"
-         placeholder="ws://192.168.1.10:8766" />
+         placeholder="ws://192.168.3.2:8766" />
   <div class="row">
     <button id="btnConnect" type="button">Connect</button>
     <button id="btnDisconnect" type="button" class="danger" disabled>Disconnect</button>
@@ -146,6 +150,17 @@
       el.bridgeState.className = cls || "";
     }
 
+    function defaultWsUrl() {
+      let host = "";
+      try {
+        host = (location && location.hostname) ? String(location.hostname).trim() : "";
+      } catch (err) {
+        host = "";
+      }
+      if (!host) host = "192.168.3.2";
+      return "ws://" + host + ":8766";
+    }
+
     function persistUrl() {
       try {
         localStorage.setItem(LS_KEY, el.wsUrl.value.trim());
@@ -155,17 +170,24 @@
     }
 
     function loadSavedUrl() {
+      const fallback = defaultWsUrl();
+      el.wsUrl.placeholder = fallback;
       try {
-        const saved = localStorage.getItem(LS_KEY);
-        if (saved) el.wsUrl.value = saved;
+        const saved = (localStorage.getItem(LS_KEY) || "").trim();
+        el.wsUrl.value = saved || fallback;
       } catch (err) {
         showError(err);
+        el.wsUrl.value = fallback;
       }
     }
 
     function validateWsUrl(raw) {
       const url = (raw || "").trim();
-      if (!url) throw new Error("WebSocket URL 为空");
+      if (!url) {
+        throw new Error(
+          "WebSocket URL 为空（灰色占位符不是真实值；请点输入框确认，或使用默认 ws://<页面hostname>:8766）",
+        );
+      }
       let parsed;
       try {
         parsed = new URL(url);
@@ -411,6 +433,11 @@
     }
 
     function connect() {
+      const input = document.getElementById("wsUrl");
+      if (input) el.wsUrl = input;
+      if (!(el.wsUrl.value || "").trim()) {
+        el.wsUrl.value = defaultWsUrl();
+      }
       wantConnected = true;
       backoffMs = 500;
       clearReconnect();
