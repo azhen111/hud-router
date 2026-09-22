@@ -2,9 +2,11 @@
 
 ## Phase 3 — live 通路（ASR 加固）
 
-`server/live.py`：眼镜 PCM 上行 → Deepgram nova-3（`keyterm`）→ `asr/aggregator.py`（默认静音 800ms）→ 短句过滤 → `route()` → `{"text": answer}` 下行上镜。
+`server/live.py`：眼镜 PCM 上行 → Deepgram nova-3（`keyterm`）→ `asr/aggregator.py`（独立静音定时器，默认 1200ms；`speech_final` 不关窗）→ 短句过滤（默认 3 字，命中 keyterm 则豁免）→ `route()` → `{"text": answer}` 下行上镜。
 
-**不做：** display_policy、RAG。`router.py` / `prompts.py` / `testcases*` 不动。
+**Self 政策：** `speakerRole` / `speaker` 只写 jsonl 和终端。Self 发话**不再**在 `route()` 前丢掉，和 Other 一样进模型。`ROUTER_SYSTEM_PROMPT` 也不再写「SELF 一律不触发」。
+
+**不做：** display_policy、RAG。
 
 **不要和** `glasses/display_server.py` **抢同一端口**（默认都是 8766）。
 
@@ -29,8 +31,9 @@ export ROUTER_MODEL=...
 # 可选
 export OPENAI_BASE_URL=https://...
 export LIVE_LANG=zh
-export AGG_SILENCE_MS=800
-export MIN_ROUTE_CHARS=6
+export AGG_SILENCE_MS=1200
+export MIN_ROUTE_CHARS=3
+export LIVE_ROUTER_TIMEOUT_MS=3000
 export LIVE_WEARER_NOTE='佩戴者是软件工程师，当前对话为 IT 技术讨论'
 ```
 
@@ -42,7 +45,7 @@ python server/live.py --host 0.0.0.0 --port 8766 --lang zh
 python server/live.py --lang multi --log live_multi.jsonl
 ```
 
-重启：Ctrl-C 停掉旧进程后再跑同一条命令。改 `terms_zh.json` 后必须重启才会进 Deepgram 握手。
+重启（改默认 / 词表 / Self 政策后必须）：Ctrl-C 停掉旧 `python server/live.py`，再跑同一条命令。改 `terms_zh.json` 后必须重启才会进 Deepgram 握手。眼镜插件若已 Connect，断线再连一次。
 
 3. 眼镜插件：
 
@@ -59,7 +62,7 @@ npx evenhub-simulator http://localhost:5173
 4. 手机页填 `ws://<电脑LAN>:8766`（灰色占位符不是值），点 **Connect**。
    `app.json` `network.whitelist` 须含该 origin（QR 开发态可能跳过，正式包必须写全，无通配符）。
 5. 状态出现 `deepgram_ready` 后开麦。镜腿单击 = 暂停/恢复采集；双击 = `shutDownPageContainer(1)` 退出。
-6. 对面问技术问题。jsonl 里 `kind=final` 是原始 FINAL，`kind=turn` 是聚合后的文本 + router。`should_respond=true` 时镜片出字。短于 `--min-route-chars`（默认 6）的聚合句 `skip_reason=too_short`，不调 OpenAI。
+6. 对面**或佩戴者**问技术问题都会进 `route()`。jsonl 里 `kind=final` 是原始 FINAL，`kind=turn` 是聚合后的文本 + router（含 `speakerRole`）。`should_respond=true` 时镜片出字。短于 `--min-route-chars`（默认 3）且**未命中** `terms_zh.json` 的聚合句 `skip_reason=too_short`，不调 OpenAI；命中 keyterm（如 `RAG` / `Pod` / `限流`）即使更短也放行。
 
 物理验收（戴上 G2、看见字）由使用者完成。本环境不编造硬件结果。A/B 清单：`server/ASR_EVAL.md`。朗读稿：`server/fixtures/it_questions_20.txt`。
 
@@ -103,10 +106,10 @@ python server/live.py --lang multi --log live_multi.jsonl
 | lang | `zh` | `--lang` / `LIVE_LANG` | Deepgram `zh` 或 `multi` |
 | locale | 由 lang 推导（`multi`→`zh`） | （随 lang） | 交给 `route()` 的 `locale` |
 | wearer_note | 佩戴者是软件工程师，当前对话为 IT 技术讨论 | `--wearer-note` / `LIVE_WEARER_NOTE` | 每段都带 |
-| router timeout | 1800 ms | `--router-timeout-ms` / `LIVE_ROUTER_TIMEOUT_MS` | 超时放弃，不重试 |
+| router timeout | 3000 ms | `--router-timeout-ms` / `LIVE_ROUTER_TIMEOUT_MS` | 超时放弃，不重试 |
 | DG handshake | 60 s | `--handshake-timeout-s` / `DEEPGRAM_HANDSHAKE_TIMEOUT_S` | Deepgram listen 握手 |
-| agg silence | 800 ms | `--silence-ms` / `AGG_SILENCE_MS` | `TurnAggregator` 静音关窗（现有 aggregator，不另写一套） |
-| min route chars | 6 | `--min-route-chars` / `MIN_ROUTE_CHARS` | 聚合后短于此不调 OpenAI |
+| agg silence | 1200 ms | `--silence-ms` / `AGG_SILENCE_MS` | 独立 ticker 每 50ms `tick()`；最后一条 FINAL 后再等这么久就关窗，不必再来 ASR |
+| min route chars | 3 | `--min-route-chars` / `MIN_ROUTE_CHARS` | 聚合后短于此且未命中 keyterm 则 `skip_reason=too_short` |
 | keyterm 词表 | `server/terms_zh.json` | `--terms` / `LIVE_TERMS_PATH` | nova-3 `keyterm` 列表 |
 | 关闭 keyterm | 关 | `--no-keyterms` | A/B 基线 |
 | log | `live_<时间>.jsonl` | `--log` | 会话日志路径 |
@@ -122,7 +125,7 @@ Router：`OPENAI_API_KEY` + `ROUTER_MODEL`，可选 `OPENAI_BASE_URL`。`max_ret
 {"type":"pcm","pcm_b64":"...","speakerRole":"other","direction":123}
 ```
 
-`speakerRole`：`self`/`other`/`unknown` → router `SELF`/`OTHER`/`UNKNOWN`。`direction` 只记日志，不参与判决。
+`speakerRole`：`self`/`other`/`unknown` → router `SELF`/`OTHER`/`UNKNOWN`，只记 jsonl / 终端，**不**用来丢掉 Self。`direction` 只记日志，不参与判决。
 
 下行：`{"text":"..."}` 上镜；`{"status":"deepgram_ready"}` / `{"error":"..."}` 只上手机页。
 

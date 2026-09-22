@@ -5,8 +5,10 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Final
 
-# Frozen verbatim copy of uploads/ROUTER_SYSTEM_PROMPT.txt.
-# Do not rewrite wording. Issues spotted in the source (comments only):
+# Frozen verbatim copy of uploads/ROUTER_SYSTEM_PROMPT.txt, plus documented
+# appends and one explicit live-path edit: the SELF paragraph now says
+# judge SELF like OTHER (no hard exclude). Do not rewrite other wording.
+# Issues spotted in the source (comments only):
 # - The JSON sketch types `kind` as a free string; allowed values are listed above it.
 # - `wearer_note` is in the route() input contract but is not mentioned here;
 #   assemble_user_message attaches it as a sibling XML tag when present.
@@ -74,8 +76,10 @@ Use earlier turns to resolve pronouns, ellipsis, and omitted subjects —
 common in Japanese — and to detect follow-ups and repeats.
 
 If the transcript marks a speaker as SELF, that is the wearer.
-The wearer asking a question out loud does NOT trigger; they are
-speaking to the person in front of them, not to you.
+Speaker labels are for logs and context only. Judge SELF the same
+as OTHER: a wearer question still triggers when it is a request
+for information. Do not suppress a trigger just because the last
+speaker is SELF.
 Speakers marked UNKNOWN: judge on content alone.
 
 ## The answer

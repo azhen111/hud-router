@@ -105,7 +105,14 @@ class _OpenTurn:
 
 
 class TurnAggregator:
-    """Push FINAL segments; tick(now) to apply silence / max-turn."""
+    """Push FINAL segments; tick(now) to apply silence / max-turn.
+
+    Silence close is independent-timer-driven: after the last FINAL,
+    the host must call ``tick(now)`` on its own clock. Waiting
+    ``silence_ms`` with no further ASR events is enough to close the
+    turn. ``push()`` also closes a prior turn when a new FINAL arrives
+    after a silence gap, but that is not required for close.
+    """
 
     def __init__(self, config: AggregatorConfig | None = None) -> None:
         self.config: AggregatorConfig = config if config is not None else AggregatorConfig()

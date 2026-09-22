@@ -45,7 +45,7 @@ Copy `.env.example` to `.env` or export the same variables. Nothing is hardcoded
 
 - At most the last 6 turns are kept, sorted ascending by `ts`.
 - Only the last turn is judged; earlier turns are context.
-- `speaker` is `OTHER` / `SELF` / `UNKNOWN` (unknown labels become `UNKNOWN`).
+- `speaker` is `OTHER` / `SELF` / `UNKNOWN` (unknown labels become `UNKNOWN`). Labels are logged and passed to the model as context; last-speaker `SELF` is **not** hard-excluded (judged like `OTHER`).
 - Missing punctuation and ASR noise are expected.
 
 ## Output
@@ -111,7 +111,7 @@ Even with `temperature=0`, about 10% output uncertainty has been observed. **Run
 ## Known limitations / 已知限制
 
 - Deduplication of repeated questions is **not** implemented in this layer. It belongs to the display layer.
-- Speaker labels from upstream are currently mostly `UNKNOWN`, so the SELF guard rarely fires in practice.
+- Speaker labels (`SELF` / `OTHER` / `UNKNOWN`) are recorded in logs / jsonl only. There is no pre-model SELF short-circuit; the prompt judges SELF on content like OTHER. `testcases.jsonl` id=18 and `testcases_zh_it.jsonl` id=217 were updated to expect a trigger on wearer questions.
 - Even at `temperature=0`, roughly 10% run-to-run output uncertainty has been observed. Acceptance must be run **5 times**; a single run must not be used as the basis for code or prompt changes.
 - Known API tail-latency jitter: p95 can occasionally exceed 2000ms. Treat that as an observational issue, not an automatic reason to change the router.
 - The OpenAI Python client is constructed with `max_retries=0`. Earlier ~12s evaluate spikes (id=8 / id=25) were consistent with the SDK default `max_retries=2` (retry on timeout / 5xx plus exponential backoff). Timeout or transport error now degrades immediately; there is no retry loop.

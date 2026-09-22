@@ -11,6 +11,7 @@ if str(_ASR) not in sys.path:
     sys.path.insert(0, str(_ASR))
 
 from aggregator import AggregatorConfig, FinalSegment, TurnAggregator, join_segment_texts
+from settings import DEFAULT_AGG_SILENCE_MS
 
 
 def _seg(
@@ -134,6 +135,46 @@ class SpeechFinalTests(unittest.TestCase):
         out = agg.tick(1.21)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].text, "还没结束")
+
+
+class IndependentTimerCloseTests(unittest.TestCase):
+    """Silence close must fire from tick() alone — no later FINAL required."""
+
+    def test_default_silence_is_1200ms(self) -> None:
+        self.assertEqual(DEFAULT_AGG_SILENCE_MS, 1200)
+
+    def test_tick_closes_after_silence_with_no_further_finals(self) -> None:
+        agg = TurnAggregator(
+            AggregatorConfig(
+                silence_ms=DEFAULT_AGG_SILENCE_MS,
+                min_chars=1,
+                use_speech_final=False,
+            )
+        )
+        last_end = 0.5
+        self.assertEqual(
+            agg.push(_seg("这个接口保证幂等吗", start=0.0, dur=0.4, recv=last_end)),
+            [],
+        )
+        # Intermediate ticks, still no new ASR events.
+        self.assertEqual(agg.tick(last_end + 0.4), [])
+        self.assertEqual(agg.tick(last_end + 1.199), [])
+        out = agg.tick(last_end + 1.201)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].text, "这个接口保证幂等吗")
+        self.assertEqual(out[0].segments, 1)
+
+    def test_two_finals_then_timer_only_close(self) -> None:
+        agg = TurnAggregator(
+            AggregatorConfig(silence_ms=1200, min_chars=1, use_speech_final=False)
+        )
+        self.assertEqual(agg.push(_seg("这个接口", start=0.0, dur=0.3, recv=0.4)), [])
+        self.assertEqual(agg.push(_seg("保证幂等吗", start=0.45, dur=0.3, recv=0.8)), [])
+        self.assertEqual(agg.tick(1.5), [])
+        out = agg.tick(0.8 + 1.201)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].segments, 2)
+        self.assertEqual(out[0].text, "这个接口保证幂等吗")
 
 
 class FlushTests(unittest.TestCase):

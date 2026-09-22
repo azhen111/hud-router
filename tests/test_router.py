@@ -234,6 +234,45 @@ class TestPromptAppend(unittest.TestCase):
         self.assertIn("56 characters maximum", section)
         self.assertIn("This is at most two lines on the display", section)
 
+    def test_self_not_hard_excluded_in_prompt(self) -> None:
+        self.assertNotIn("does NOT trigger", ROUTER_SYSTEM_PROMPT)
+        self.assertIn("Judge SELF the same", ROUTER_SYSTEM_PROMPT)
+        self.assertIn("Do not suppress a trigger just because the last", ROUTER_SYSTEM_PROMPT)
+
+
+class TestSelfCallsRoute(unittest.TestCase):
+    def test_self_last_speaker_invokes_model(self) -> None:
+        seen: list[list[dict[str, str]]] = []
+
+        def fake_complete(messages: list[dict[str, str]]) -> str:
+            seen.append(messages)
+            return json.dumps(
+                {
+                    "should_respond": True,
+                    "confidence": 0.88,
+                    "kind": "term",
+                    "reason": "wearer asked for a gloss",
+                    "answer": "JWT：JSON Web Token",
+                    "needs_more_context": False,
+                },
+                ensure_ascii=False,
+            )
+
+        result = route(
+            {
+                "recent_turns": [
+                    {"speaker": "SELF", "text": "JWT 是什么", "ts": 1}
+                ],
+                "locale": "zh",
+            },
+            completion_fn=fake_complete,
+        )
+        self.assertEqual(len(seen), 1)
+        self.assertIn("SELF: JWT 是什么", seen[0][1]["content"])
+        self.assertTrue(result.should_respond)
+        self.assertEqual(result.kind, "term")
+        self.assertNotIn("last speaker is SELF", result.reason)
+
 
 if __name__ == "__main__":
     unittest.main()

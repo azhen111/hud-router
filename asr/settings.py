@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-DEFAULT_AGG_SILENCE_MS: int = 800
+DEFAULT_AGG_SILENCE_MS: int = 1200
 DEFAULT_AGG_MAX_TURN_MS: int = 15_000
 DEFAULT_AGG_MIN_CHARS: int = 4
 DEFAULT_AGG_USE_SPEECH_FINAL: bool = True

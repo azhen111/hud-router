@@ -15,7 +15,7 @@
 {"id":15,"locale":"ja","turns":[["UNKNOWN","ちょっと確認なんですが納期はいつでしたか"]],"expect":true,"note":"前置き付き質問"}
 {"id":16,"locale":"ja","turns":[["UNKNOWN","LLMのハルシネーションって何ですか"],["SELF","モデルが事実でないことを生成する現象です"],["UNKNOWN","ハルシネーションについてもう一度教えてください"]],"expect":false,"note":"直前に回答済み"}
 {"id":17,"locale":"ja","turns":[["UNKNOWN","もう少し詳しく知りたいですね"]],"expect":true,"note":"願望形の依頼"}
-{"id":18,"locale":"ja","turns":[["SELF","この技術の仕組みってどうなってるんですか"]],"expect":false,"note":"装着者自身の発話"}
+{"id":18,"locale":"ja","turns":[["SELF","この技術の仕組みってどうなってるんですか"]],"expect":true,"note":"装着者の質問も内容で判定（SELF 不再硬排除）"}
 {"id":19,"locale":"ja","turns":[["UNKNOWN","そこ、SLAが99.9%って書いてありますけど"]],"expect":true,"kind":"term","note":"術語の提示"}
 {"id":20,"locale":"ja","turns":[["UNKNOWN","ありがとうございました"]],"expect":false,"note":"謝辞"}
 {"id":21,"locale":"zh","turns":[["UNKNOWN","这个我没听说过"]],"expect":true,"note":"陈述形式的提问"}

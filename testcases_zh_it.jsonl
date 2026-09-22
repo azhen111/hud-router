@@ -14,7 +14,7 @@
 {"id":214,"locale":"zh","turns":[["UNKNOWN","K8s 的 HPA 是根据什么指标扩容的"]],"expect":true,"kind":"term"}
 {"id":215,"locale":"zh","turns":[["UNKNOWN","我看日志里一堆 5xx"]],"expect":false,"note":"现象陈述，非提问"}
 {"id":216,"locale":"zh","turns":[["UNKNOWN","我看日志里一堆 5xx"],["UNKNOWN","这一般是什么原因造成的"]],"expect":true,"note":"follow-up"}
-{"id":217,"locale":"zh","turns":[["SELF","这个用的是什么协议"]],"expect":false,"note":"佩戴者自己发问，走 guard"}
+{"id":217,"locale":"zh","turns":[["SELF","这个用的是什么协议"]],"expect":true,"note":"佩戴者发问也按内容判，不再走 SELF guard"}
 {"id":218,"locale":"zh","turns":[["UNKNOWN","然后我们就把它重构了一遍"]],"expect":false,"note":"叙述"}
 {"id":219,"locale":"zh","turns":[["UNKNOWN","灰度发布具体怎么做的"]],"expect":true}
 {"id":220,"locale":"zh","turns":[["UNKNOWN","这个词是什么意思来着，那个……幂等"]],"expect":true,"note":"带 filler 的提问"}

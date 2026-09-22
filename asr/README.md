@@ -20,7 +20,7 @@ Speaker is always `UNKNOWN` (no diarization). No glasses/BLE/frontend, no RAG, n
 
 ```bash
 python asr/pipeline.py
-python asr/pipeline.py --lang zh --silence-ms 800 --window-turns 6
+python asr/pipeline.py --lang zh --silence-ms 1200 --window-turns 6
 python asr/pipeline.py --config asr/config.example.json
 ```
 
@@ -50,7 +50,7 @@ Override order: **CLI flag > environment variable > `--config` JSON > default**.
 
 | Name | Default | CLI | Env | Meaning |
 | --- | --- | --- | --- | --- |
-| `AGG_SILENCE_MS` | 800 | `--silence-ms` | `AGG_SILENCE_MS` | Silence after last FINAL ends the turn (from last FINAL audio-end / recv) |
+| `AGG_SILENCE_MS` | 1200 | `--silence-ms` | `AGG_SILENCE_MS` | Independent-timer silence after last FINAL ends the turn (`tick()`, no further ASR events needed) |
 | `AGG_MAX_TURN_MS` | 15000 | `--max-turn-ms` | `AGG_MAX_TURN_MS` | Force-close if the open turn grows this long |
 | `AGG_MIN_CHARS` | 4 | `--min-chars` | `AGG_MIN_CHARS` | Shorter turns are discarded (not sent to the router) |
 | `AGG_USE_SPEECH_FINAL` | true | `--use-speech-final` / `--no-speech-final` | `AGG_USE_SPEECH_FINAL` | If true, `speech_final=true` **or** silence timeout ends a turn |
@@ -64,7 +64,7 @@ Example `asr/config.example.json`:
 
 ```json
 {
-  "AGG_SILENCE_MS": 800,
+  "AGG_SILENCE_MS": 1200,
   "AGG_MAX_TURN_MS": 15000,
   "AGG_MIN_CHARS": 4,
   "AGG_USE_SPEECH_FINAL": true,

@@ -7,15 +7,19 @@ import json
 import unittest
 
 from server.live import (
+    DEFAULT_MIN_ROUTE_CHARS,
+    DEFAULT_ROUTER_TIMEOUT_MS,
     DEFAULT_TERMS_PATH,
     build_settings,
     display_speaker,
+    hits_keyterm,
     locale_from_lang,
     map_speaker_role,
     parse_args,
     parse_uplink_message,
     too_short_for_router,
 )
+from settings import DEFAULT_AGG_SILENCE_MS
 from stream import listen_connect_kwargs, load_keyterms
 
 
@@ -89,23 +93,62 @@ class UplinkParse(unittest.TestCase):
 
 
 class MinRouteChars(unittest.TestCase):
-    def test_default_six(self) -> None:
-        self.assertTrue(too_short_for_router("嗯", 6))
-        self.assertTrue(too_short_for_router("  你好  ", 6))
-        self.assertFalse(too_short_for_router("这个接口保证幂等吗", 6))
-        self.assertEqual(len("REST吗"), 5)
-        self.assertTrue(too_short_for_router("REST吗", 6))
+    def test_default_is_three(self) -> None:
+        self.assertEqual(DEFAULT_MIN_ROUTE_CHARS, 3)
+        self.assertTrue(too_short_for_router("嗯", 3))
+        self.assertTrue(too_short_for_router("  你好  ", 3))
+        self.assertFalse(too_short_for_router("幂等吗", 3))
+        self.assertFalse(too_short_for_router("这个接口保证幂等吗", 3))
+
+    def test_keyterm_hit_exempts_short_filter(self) -> None:
+        terms = ["RAG", "REST", "Pod", "限流", "JWT"]
+        self.assertFalse(too_short_for_router("RAG", 3, terms))
+        self.assertFalse(too_short_for_router("rest", 3, terms))
+        self.assertFalse(too_short_for_router("Pod", 6, terms))
+        self.assertFalse(too_short_for_router("线流", 3, ["线流", "限流"]))
+        self.assertTrue(too_short_for_router("嗯", 3, terms))
+        self.assertTrue(too_short_for_router("ab", 3, terms))
+        self.assertTrue(hits_keyterm("什么是 jwt", ["JWT"]))
+        self.assertFalse(hits_keyterm("嗯嗯", ["JWT"]))
 
 
 class KeytermLoad(unittest.TestCase):
     def test_terms_file_has_about_fifty_plain_terms(self) -> None:
         terms = load_keyterms(DEFAULT_TERMS_PATH)
         self.assertGreaterEqual(len(terms), 45)
-        self.assertLessEqual(len(terms), 80)
+        self.assertLessEqual(len(terms), 90)
+        required = {
+            "Kubernetes",
+            "Kafka",
+            "JWT",
+            "Pod",
+            "GraphQL",
+            "Redis",
+            "gRPC",
+            "限流",
+            "回滚",
+            "熔断",
+            "灰度",
+            "幂等",
+            "分片",
+            "扩容",
+            "库布尔netes",
+            "GrafficQL",
+            "CFCAR",
+            "GWT",
+            "pud",
+            "线流",
+            "回拱",
+        }
+        missing = required - set(terms)
+        self.assertEqual(missing, set())
+        self.assertEqual(len(terms), len(set(terms)))
         for term in terms:
+            self.assertIsInstance(term, str)
             self.assertNotIn(",", term)
             self.assertFalse(term.endswith(":1"))
             self.assertFalse(term.endswith(":5"))
+            self.assertNotIn(":", term)
 
     def test_connect_kwargs_uses_keyterm_not_keywords(self) -> None:
         terms = ["REST", "Kafka", "幂等"]
@@ -122,6 +165,11 @@ class KeytermLoad(unittest.TestCase):
         settings = build_settings(parse_args(["--lang", "multi", "--log", "/tmp/live_test.jsonl"]))
         self.assertEqual(settings.lang, "multi")
         self.assertGreaterEqual(len(settings.keyterms), 45)
+        self.assertEqual(settings.min_route_chars, 3)
+        self.assertEqual(settings.silence_ms, 1200)
+        self.assertEqual(settings.router_timeout_ms, 3000)
+        self.assertEqual(DEFAULT_AGG_SILENCE_MS, 1200)
+        self.assertEqual(DEFAULT_ROUTER_TIMEOUT_MS, 3000)
         probe = listen_connect_kwargs(settings.lang, settings.keyterms)
         self.assertNotIn("keywords", probe)
         self.assertEqual(len(probe["keyterm"]), len(settings.keyterms))

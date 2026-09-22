@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Phase 3 live path: G2 PCM → Deepgram → aggregator → router → lens.
 
-No display_policy, no RAG. speech_final / silence-closed turns go to route().
-Nova-3 uses `keyterm` (not `keywords`).
+No display_policy, no RAG. Silence-closed turns go to route() (independent
+ticker; speech_final does not close). Nova-3 uses `keyterm` (not `keywords`).
+Self utterances are sent to route() like Other; speakerRole is logs only.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any, TextIO
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,8 +56,8 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8766
 DEFAULT_LANG = "zh"
 DEFAULT_WEARER_NOTE = "佩戴者是软件工程师，当前对话为 IT 技术讨论"
-DEFAULT_ROUTER_TIMEOUT_MS = 1800
-DEFAULT_MIN_ROUTE_CHARS = 6
+DEFAULT_ROUTER_TIMEOUT_MS = 3000
+DEFAULT_MIN_ROUTE_CHARS = 3
 DEFAULT_TERMS_PATH = Path(__file__).resolve().parent / "terms_zh.json"
 
 
@@ -97,9 +99,32 @@ def display_speaker(raw: object) -> str:
     return text
 
 
-def too_short_for_router(text: str, min_chars: int) -> bool:
-    """CJK and ASCII both count as len(stripped). Do not call route() if True."""
-    return len(text.strip()) < min_chars
+def hits_keyterm(text: str, keyterms: Sequence[str]) -> bool:
+    """Case-insensitive substring match against the loaded keyterm list."""
+    hay = text.strip().casefold()
+    if not hay:
+        return False
+    for term in keyterms:
+        needle = str(term).strip()
+        if needle and needle.casefold() in hay:
+            return True
+    return False
+
+
+def too_short_for_router(
+    text: str,
+    min_chars: int,
+    keyterms: Sequence[str] | None = None,
+) -> bool:
+    """CJK and ASCII both count as len(stripped). Do not call route() if True.
+
+    A keyterm / terms hit exempts the short filter even when len < min_chars
+    (e.g. ``RAG``, ``REST``, ``Pod``, ``限流``).
+    """
+    stripped = text.strip()
+    if keyterms and hits_keyterm(stripped, keyterms):
+        return False
+    return len(stripped) < min_chars
 
 
 def parse_uplink_message(raw: object) -> tuple[bytes, str, int | None] | None:
@@ -236,12 +261,15 @@ class LiveSession:
         self.last_direction: int | None = None
         self.route_lock = threading.Lock()
         self.closed = False
+        # speech_final off: Deepgram often marks each short FINAL speech_final,
+        # which closed 1-seg turns before AGG_SILENCE_MS could merge split
+        # questions. Close is driven by _agg_ticker → tick() alone.
         self.agg = TurnAggregator(
             AggregatorConfig(
                 silence_ms=settings.silence_ms,
                 max_turn_ms=DEFAULT_AGG_MAX_TURN_MS,
                 min_chars=1,
-                use_speech_final=True,
+                use_speech_final=False,
             )
         )
         self.agg_lock = threading.Lock()
@@ -359,9 +387,12 @@ class LiveSession:
             f"{stamp} {display_speaker(role)}  ({turn.segments} segs)  {text}",
             flush=True,
         )
-        if too_short_for_router(text, self.settings.min_route_chars):
+        if too_short_for_router(
+            text, self.settings.min_route_chars, self.settings.keyterms
+        ):
+            n = len(text.strip())
             reason = (
-                f"too short ({len(text.strip())} < {self.settings.min_route_chars})"
+                f"too_short ({n} < {self.settings.min_route_chars}; no keyterm hit)"
             )
             print(f"{stamp}   → skip  reason: {reason}", flush=True)
             self._write_turn_jsonl(

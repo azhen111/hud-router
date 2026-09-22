@@ -467,20 +467,12 @@ def route(
     One model call returns the full decision JSON. Illegal output degrades to
     `should_respond=false` and never raises (except missing env config when a
     live client must be constructed).
+
+    Speaker labels (SELF / OTHER / UNKNOWN) are context for the model and
+    for logs only. A last-speaker SELF turn is sent to the model the same
+    way as OTHER — there is no pre-model hard exclude.
     """
     turns: list[Turn] = window_turns(payload)
-    if turns and str(turns[-1].get("speaker", "")) == "SELF":
-        return RouterResult(
-            should_respond=False,
-            confidence=1.0,
-            kind="none",
-            reason="last speaker is SELF (wearer); no HUD trigger",
-            answer="",
-            needs_more_context=False,
-            over_length=False,
-            truncated_to_none=False,
-            original_answer="",
-        )
     locale: str = str(payload.get("locale") or "ja")
     wearer_note_raw: object = payload.get("wearer_note")
     wearer_note: str | None
