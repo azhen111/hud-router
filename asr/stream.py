@@ -10,11 +10,10 @@ import argparse
 import json
 import os
 import queue
-import statistics
 import sys
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -44,6 +43,18 @@ DEEPGRAM_MODEL: str = "nova-3"
 # first byte we sent. Because we stream the mic in real time, that clock
 # lines up with wall time from session_start. The difference is Deepgram's
 # default endpointing wait + network + decode. We do not set endpointing.
+
+
+@dataclass(frozen=True)
+class ParsedAsrResult:
+    """One Deepgram Results payload with a non-empty transcript."""
+
+    transcript: str
+    confidence: float
+    is_final: bool
+    speech_final: bool
+    start_s: float
+    duration_s: float
 
 
 @dataclass
@@ -223,71 +234,92 @@ def _alt0(message: object) -> tuple[str, float]:
     return transcript, confidence
 
 
+def parse_deepgram_result(message: object) -> ParsedAsrResult | None:
+    """Parse a Results message. None if not a transcript-bearing Results event."""
+    msg_type: str = str(getattr(message, "type", "") or "")
+    if msg_type and msg_type != "Results":
+        return None
+    if not hasattr(message, "channel") and not (
+        isinstance(message, Mapping) and "channel" in message
+    ):
+        return None
+    transcript: str
+    confidence: float
+    transcript, confidence = _alt0(message)
+    if not transcript.strip():
+        return None
+    is_final_raw: Any = getattr(message, "is_final", None)
+    if is_final_raw is None and isinstance(message, Mapping):
+        is_final_raw = message.get("is_final")
+    speech_final_raw: Any = getattr(message, "speech_final", None)
+    if speech_final_raw is None and isinstance(message, Mapping):
+        speech_final_raw = message.get("speech_final")
+    try:
+        duration: float = float(getattr(message, "duration", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    if isinstance(message, Mapping) and duration == 0.0:
+        try:
+            duration = float(message.get("duration") or 0.0)
+        except (TypeError, ValueError):
+            duration = 0.0
+    try:
+        start: float = float(getattr(message, "start", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        start = 0.0
+    if isinstance(message, Mapping) and start == 0.0:
+        try:
+            start = float(message.get("start") or 0.0)
+        except (TypeError, ValueError):
+            start = 0.0
+    return ParsedAsrResult(
+        transcript=transcript,
+        confidence=confidence,
+        is_final=bool(is_final_raw),
+        speech_final=bool(speech_final_raw),
+        start_s=start,
+        duration_s=duration,
+    )
+
+
 def handle_message(message: object, session: Session) -> None:
     raw: str = message_to_raw_json(message)
     with session.lock:
         session.jsonl.write(raw + "\n")
         session.jsonl.flush()
 
-    msg_type: str = str(getattr(message, "type", "") or "")
-    if msg_type and msg_type != "Results":
+    parsed: ParsedAsrResult | None = parse_deepgram_result(message)
+    if parsed is None:
         return
-    if not hasattr(message, "channel") and not (isinstance(message, Mapping) and "channel" in message):
-        return
-
-    transcript: str
-    confidence: float
-    transcript, confidence = _alt0(message)
-    if not transcript.strip():
-        return
-
-    is_final_raw: Any = getattr(message, "is_final", None)
-    if is_final_raw is None and isinstance(message, Mapping):
-        is_final_raw = message.get("is_final")
-    is_final: bool = bool(is_final_raw)
-
-    speech_final_raw: Any = getattr(message, "speech_final", None)
-    if speech_final_raw is None and isinstance(message, Mapping):
-        speech_final_raw = message.get("speech_final")
-    speech_final: bool = bool(speech_final_raw)
-
-    try:
-        duration: float = float(getattr(message, "duration", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        duration = 0.0
-    try:
-        start: float = float(getattr(message, "start", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        start = 0.0
 
     now_rel: float = time.perf_counter() - session.started_perf
     stamp: str = fmt_session_ts(now_rel)
-    if is_final:
+    if parsed.is_final:
         kind: str = f"{Fore.GREEN}FINAL{Style.RESET_ALL}  "
-        print(f"{stamp} {kind}  {transcript}")
+        print(f"{stamp} {kind}  {parsed.transcript}")
         meta: str = (
-            f"{stamp}   ^ speech_final={str(speech_final).lower()}  "
-            f"duration={duration:.2f}s  confidence={confidence:.2f}"
+            f"{stamp}   ^ speech_final={str(parsed.speech_final).lower()}  "
+            f"duration={parsed.duration_s:.2f}s  confidence={parsed.confidence:.2f}"
         )
         print(f"{Fore.CYAN}{meta}{Style.RESET_ALL}")
         # Audio-clock end of this utterance, mapped onto wall time.
-        t_audio_end_rel: float = start + duration
+        t_audio_end_rel: float = parsed.start_s + parsed.duration_s
         latency_s: float = max(0.0, now_rel - t_audio_end_rel)
         with session.lock:
             session.finals.append(
                 FinalStats(
                     recv_rel_s=now_rel,
-                    start_s=start,
-                    duration_s=duration,
-                    confidence=confidence,
-                    speech_final=speech_final,
-                    chars=len(transcript),
+                    start_s=parsed.start_s,
+                    duration_s=parsed.duration_s,
+                    confidence=parsed.confidence,
+                    speech_final=parsed.speech_final,
+                    chars=len(parsed.transcript),
                     latency_s=latency_s,
                 )
             )
     else:
         kind = f"{Fore.YELLOW}INTERIM{Style.RESET_ALL}"
-        print(f"{stamp} {kind}  {transcript}")
+        print(f"{stamp} {kind}  {parsed.transcript}")
 
 
 def print_summary(session: Session) -> None:
@@ -369,107 +401,146 @@ def require_api_key() -> str:
     return key
 
 
+def run_mic_deepgram_session(
+    *,
+    api_key: str,
+    language: str,
+    device: int | None,
+    on_message: Callable[[object], None],
+    stop: threading.Event | None = None,
+    started_perf_out: list[float] | None = None,
+    on_error: Callable[[object], None] | None = None,
+) -> None:
+    """Block: system mic → Deepgram listen.v1 until stop or Ctrl-C.
+
+    Importable helper for M2 pipeline. M1 CLI uses this unchanged.
+    Endpointing is not set (Deepgram defaults).
+    """
+    halt: threading.Event = stop if stop is not None else threading.Event()
+    audio_q: queue.Queue[bytes | None] = queue.Queue()
+    client: DeepgramClient = DeepgramClient(api_key=api_key)
+
+    def _on_error(err: object) -> None:
+        if on_error is not None:
+            on_error(err)
+        else:
+            print(f"{Fore.RED}deepgram error: {err}{Style.RESET_ALL}", file=sys.stderr)
+
+    with client.listen.v1.connect(
+        model=DEEPGRAM_MODEL,
+        language=language,
+        encoding="linear16",
+        sample_rate=SAMPLE_RATE,
+        channels=CHANNELS,
+        interim_results=True,
+        punctuate=True,
+    ) as connection:
+        connection.on(EventType.MESSAGE, on_message)
+        connection.on(EventType.ERROR, _on_error)
+
+        listen_thread: threading.Thread = threading.Thread(
+            target=connection.start_listening,
+            name="deepgram-listen",
+            daemon=True,
+        )
+        listen_thread.start()
+
+        def sender() -> None:
+            while True:
+                chunk: bytes | None = audio_q.get()
+                if chunk is None:
+                    break
+                if halt.is_set():
+                    continue
+                try:
+                    connection.send_media(chunk)
+                except Exception as exc:
+                    print(f"{Fore.RED}send_media failed: {exc}{Style.RESET_ALL}", file=sys.stderr)
+                    halt.set()
+                    break
+
+        send_thread: threading.Thread = threading.Thread(
+            target=sender, name="deepgram-send", daemon=True
+        )
+        send_thread.start()
+
+        t0: float = time.perf_counter()
+        if started_perf_out is not None:
+            if started_perf_out:
+                started_perf_out[0] = t0
+            else:
+                started_perf_out.append(t0)
+
+        def on_audio(
+            indata: Any,
+            frames: int,
+            time_info: Any,
+            status: Any,
+        ) -> None:
+            if status:
+                print(f"{Fore.YELLOW}input status: {status}{Style.RESET_ALL}", file=sys.stderr)
+            if halt.is_set():
+                return
+            audio_q.put(bytes(indata))
+
+        try:
+            sd: Any = _sounddevice()
+            with sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype="int16",
+                blocksize=BLOCK_FRAMES,
+                device=device,
+                callback=on_audio,
+            ):
+                while not halt.is_set():
+                    time.sleep(0.2)
+        except KeyboardInterrupt:
+            print("\nStopping…")
+        finally:
+            halt.set()
+            audio_q.put(None)
+            try:
+                connection.send_finalize()
+            except Exception:
+                pass
+            send_thread.join(timeout=2.0)
+
+
 def run_stream(*, device: int | None, language: str) -> int:
     api_key: str = require_api_key()
     stamp: str = datetime.now().strftime("%Y%m%d_%H%M%S")
     jsonl_path: Path = Path(f"transcript_{stamp}.jsonl")
     jsonl_fp: TextIO = jsonl_path.open("a", encoding="utf-8")
 
-    audio_q: queue.Queue[bytes | None] = queue.Queue()
-    stop: threading.Event = threading.Event()
     started_perf: float = time.perf_counter()
     session: Session = Session(
         started_perf=started_perf,
         jsonl=jsonl_fp,
         jsonl_path=jsonl_path,
     )
+    start_box: list[float] = [started_perf]
 
-    client: DeepgramClient = DeepgramClient(api_key=api_key)
     print(
         f"Deepgram model={DEEPGRAM_MODEL}  language={language}  "
         f"audio={SAMPLE_RATE}Hz mono s16le  jsonl={jsonl_path}"
     )
     print("Ctrl-C to stop.\n")
 
+    def on_message(message: object) -> None:
+        session.started_perf = start_box[0]
+        handle_message(message, session)
+
     try:
-        with client.listen.v1.connect(
-            model=DEEPGRAM_MODEL,
+        run_mic_deepgram_session(
+            api_key=api_key,
             language=language,
-            encoding="linear16",
-            sample_rate=SAMPLE_RATE,
-            channels=CHANNELS,
-            interim_results=True,
-            punctuate=True,
-        ) as connection:
-            connection.on(EventType.MESSAGE, lambda msg: handle_message(msg, session))
-            connection.on(
-                EventType.ERROR,
-                lambda err: print(f"{Fore.RED}deepgram error: {err}{Style.RESET_ALL}", file=sys.stderr),
-            )
-
-            listen_thread: threading.Thread = threading.Thread(
-                target=connection.start_listening,
-                name="deepgram-listen",
-                daemon=True,
-            )
-            listen_thread.start()
-
-            def sender() -> None:
-                while True:
-                    chunk: bytes | None = audio_q.get()
-                    if chunk is None:
-                        break
-                    if stop.is_set():
-                        continue
-                    try:
-                        connection.send_media(chunk)
-                    except Exception as exc:
-                        print(f"{Fore.RED}send_media failed: {exc}{Style.RESET_ALL}", file=sys.stderr)
-                        stop.set()
-                        break
-
-            send_thread: threading.Thread = threading.Thread(
-                target=sender, name="deepgram-send", daemon=True
-            )
-            send_thread.start()
-
-            session.started_perf = time.perf_counter()
-
-            def on_audio(
-                indata: Any,
-                frames: int,
-                time_info: Any,
-                status: Any,
-            ) -> None:
-                if status:
-                    print(f"{Fore.YELLOW}input status: {status}{Style.RESET_ALL}", file=sys.stderr)
-                if stop.is_set():
-                    return
-                audio_q.put(bytes(indata))
-
-            try:
-                sd: Any = _sounddevice()
-                with sd.InputStream(
-                    samplerate=SAMPLE_RATE,
-                    channels=CHANNELS,
-                    dtype="int16",
-                    blocksize=BLOCK_FRAMES,
-                    device=device,
-                    callback=on_audio,
-                ):
-                    while not stop.is_set():
-                        time.sleep(0.2)
-            except KeyboardInterrupt:
-                print("\nStopping…")
-            finally:
-                stop.set()
-                audio_q.put(None)
-                try:
-                    connection.send_finalize()
-                except Exception:
-                    pass
-                send_thread.join(timeout=2.0)
+            device=device,
+            on_message=on_message,
+            started_perf_out=start_box,
+        )
     finally:
+        session.started_perf = start_box[0]
         print_summary(session)
         jsonl_fp.close()
     return 0

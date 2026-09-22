@@ -1,72 +1,107 @@
-# asr — Deepgram streaming observation (Phase 2 / Milestone 1)
+# asr — Deepgram streaming + turn pipeline (Phase 2)
+
+## Milestone 1 — observation (`asr/stream.py`)
 
 Microphone → Deepgram WebSocket streaming ASR → colorized terminal + raw jsonl.
 
-This directory is an **observation tool only**. It does not import Phase 1 routing (`router.py`, `prompts.py`, `cli.py`, `evaluate.py`) and does not aggregate dialog turns.
+Does **not** import Phase 1 routing. Still the M1 CLI:
 
-## Deepgram model
+```bash
+python asr/stream.py
+python asr/stream.py --list-devices
+python asr/stream.py --device 1 --lang zh
+```
 
-**`nova-3`** (same string as the `model=` query parameter).
+## Milestone 2 — turns + router (`asr/pipeline.py`)
 
-Why this name:
+Mic → Deepgram → `aggregator` → `window` → Phase 1 `route()` → terminal + `session_*.jsonl`.
 
-- Deepgram’s current **general-purpose** streaming ASR. No built-in turn detection (that is Flux). Milestone 1 is observation, so we want transcription, not agent turn-taking.
-- Officially supports Mandarin Simplified as `zh` / `zh-CN` / `zh-Hans`, and Japanese as `ja` (so `--lang ja` later does not require a model change).
-- `nova-2` / `nova-2-general` also speak `zh`, but `nova-3` is the current recommended general streaming model for meetings / captioning / far-field audio.
-- Flux (`flux-general-en` / `flux-general-multi`) is for voice agents and does not list Mandarin `zh`.
+Speaker is always `UNKNOWN` (no diarization). No glasses/BLE/frontend, no RAG, no display dedupe.
 
-Connect parameters we set: `model`, `language`, `encoding=linear16`, `sample_rate=16000`, `channels=1`, `interim_results=true`, `punctuate=true`. Everything else is left at Deepgram defaults — **endpointing is not tuned**.
+```bash
+python asr/pipeline.py
+python asr/pipeline.py --lang zh --silence-ms 800 --window-turns 6
+python asr/pipeline.py --config asr/config.example.json
+```
+
+Needs `DEEPGRAM_API_KEY` plus Phase 1 `OPENAI_API_KEY` / `ROUTER_MODEL` / optional `OPENAI_BASE_URL`.
+
+### Terminal
+
+```
+[00:12.30] TURN (2 segs, 2.1s)  这个接口保证幂等吗
+[00:13.45]   → TRIGGER  conf=0.90  kind=term  lat=980ms
+[00:13.45]     幂等：多次执行结果相同的性质
+[00:13.45]     reason: direct question about API property
+
+[00:18.02] TURN (1 seg, 0.8s)  嗯嗯明白了
+[00:18.90]   → skip  conf=0.95  reason: backchannel
+```
+
+Each kept turn is one JSON line in `session_<YYYYMMDD_HHMMSS>.jsonl`: turn fields + full router `to_dict()` + `latency_ms` + `timeout`. There is **no** cache/short-circuit on previous router results.
+
+`ROUTER_TIMEOUT_MS` (default 1800): if `route()` exceeds this, the turn is skipped, counted as a timeout, and the pipeline keeps running.
+
+e2e latency = wall time from turn close until `route()` returns (or timeout).
+
+## Parameters
+
+Override order: **CLI flag > environment variable > `--config` JSON > default**.
+
+| Name | Default | CLI | Env | Meaning |
+| --- | --- | --- | --- | --- |
+| `AGG_SILENCE_MS` | 800 | `--silence-ms` | `AGG_SILENCE_MS` | Silence after last FINAL ends the turn (from last FINAL audio-end / recv) |
+| `AGG_MAX_TURN_MS` | 15000 | `--max-turn-ms` | `AGG_MAX_TURN_MS` | Force-close if the open turn grows this long |
+| `AGG_MIN_CHARS` | 4 | `--min-chars` | `AGG_MIN_CHARS` | Shorter turns are discarded (not sent to the router) |
+| `AGG_USE_SPEECH_FINAL` | true | `--use-speech-final` / `--no-speech-final` | `AGG_USE_SPEECH_FINAL` | If true, `speech_final=true` **or** silence timeout ends a turn |
+| `WINDOW_TURNS` | 6 | `--window-turns` | `WINDOW_TURNS` | Rolling last-N turns in the `route()` payload |
+| `ROUTER_TIMEOUT_MS` | 1800 | `--router-timeout-ms` | `ROUTER_TIMEOUT_MS` | Skip the turn if the router exceeds this (no crash) |
+| language | `zh` | `--lang` | `ASR_LANG` | Deepgram language (`zh`, later `ja`) |
+| locale | from lang | `--locale` | `ASR_LOCALE` | Phase 1 `locale` field |
+| device | system default | `--device` | `ASR_DEVICE` | Mic index or name substring |
+
+Example `asr/config.example.json`:
+
+```json
+{
+  "AGG_SILENCE_MS": 800,
+  "AGG_MAX_TURN_MS": 15000,
+  "AGG_MIN_CHARS": 4,
+  "AGG_USE_SPEECH_FINAL": true,
+  "WINDOW_TURNS": 6,
+  "ROUTER_TIMEOUT_MS": 1800,
+  "lang": "zh",
+  "locale": "zh"
+}
+```
+
+## Tests
+
+```bash
+python -m unittest discover -s asr/tests -v
+```
+
+Aggregator only (constructed FINAL sequences; no mic): silence, max-turn, min-chars, speech_final.
+
+## Deepgram model (M1/M2 share `nova-3`)
+
+**`nova-3`** — current general-purpose streaming ASR (not Flux). Supports `zh` and `ja`. Connect sets `model`, `language`, `encoding=linear16`, `sample_rate=16000`, `channels=1`, `interim_results=true`, `punctuate=true`. **Endpointing is not tuned.**
 
 ## Install
-
-Python 3.11+. Windows-friendly (`colorama` for ANSI; `sounddevice` wheels bundle PortAudio on Windows).
-
-From the repo root:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Dependencies added for this tool: `deepgram-sdk`, `sounddevice`, `colorama`.
-
-On Windows the `sounddevice` wheel includes PortAudio. On Linux install `libportaudio2` first.
-
-Set the key (never hardcode):
+`deepgram-sdk`, `sounddevice`, `colorama`, plus Phase 1 `openai`. Windows `sounddevice` wheels include PortAudio; on Linux install `libportaudio2`.
 
 ```bash
-# PowerShell
-$env:DEEPGRAM_API_KEY = "your-key"
-
-# cmd
-set DEEPGRAM_API_KEY=your-key
-
-# bash / git-bash
 export DEEPGRAM_API_KEY=your-key
+export OPENAI_API_KEY=your-key
+export ROUTER_MODEL=your-model
 ```
 
-A `.env` file with `DEEPGRAM_API_KEY=` is also loaded if present (does not overwrite a real env var).
-
-## Run
-
-From the repo root, default system mic, Chinese:
-
-```bash
-python asr/stream.py
-```
-
-Useful flags:
-
-```bash
-python asr/stream.py --list-devices
-python asr/stream.py --device 1
-python asr/stream.py --device "Microphone"
-python asr/stream.py --lang zh
-python asr/stream.py --lang ja
-```
-
-On startup the tool always prints available **input** devices (and marks the default). Audio is **16000 Hz, mono, 16-bit PCM** (Even G2 aligned).
-
-## Terminal lines
+## M1 terminal / jsonl (unchanged)
 
 ```
 [00:03.42] INTERIM  这个接口保证幂
@@ -74,21 +109,6 @@ On startup the tool always prints available **input** devices (and marks the def
 [00:04.18]   ^ speech_final=true  duration=1.85s  confidence=0.92
 ```
 
-- Timestamp is **session wall time** since the mic stream started (`[mm:ss.ms]`).
-- INTERIM = yellow, FINAL = green, meta = cyan (`colorama`).
-- Every Deepgram WebSocket message is appended **unfiltered** as one JSON line to `transcript_<YYYYMMDD_HHMMSS>.jsonl` in the current working directory.
+Raw Deepgram messages go to `transcript_<YYYYMMDD_HHMMSS>.jsonl`.
 
-## Ctrl-C summary
-
-- Total session duration
-- FINAL segment count
-- Gaps between adjacent FINAL **receive** times: p50 / p95
-- FINAL transcript character counts: p50 / p95 / max
-- Fraction of FINALs with `speech_final=true`
-- Latency **audio-end → FINAL receive**: p50 / p95
-
-Latency definition (also commented in `stream.py`):
-
-`latency = t_final_recv − (session_start + Deepgram.start + Deepgram.duration)`
-
-`start` and `duration` are Deepgram’s audio-clock fields (seconds from the first byte we sent). Because the mic is streamed in real time, that equals “when that utterance’s last sample was captured.” The remainder is Deepgram’s **default** endpointing plus network and decode. We do not set `endpointing` / `utterance_end_ms` / `vad_events`.
+M1 ASR latency: `FINAL_recv − (session_start + Deepgram.start + duration)`.
