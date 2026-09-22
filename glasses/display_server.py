@@ -129,12 +129,28 @@ async def wait_for_first_client(hub: DisplayHub) -> None:
     print(f"[file] 已连接，开始推送  {hub.status_line()}", flush=True)
 
 
-async def file_loop(hub: DisplayHub, path: Path, interval_s: float) -> None:
+async def wait_enter_or_skip() -> bool:
+    """--pause：回车继续，输入 skip（或 EOF）结束剩余。True=继续。"""
+    print("[pause] Enter=下一条  skip=结束剩余", flush=True)
+    line = await asyncio.to_thread(sys.stdin.readline)
+    if line == "":
+        print("[pause] EOF — 结束剩余", flush=True)
+        return False
+    if line.strip().lower() == "skip":
+        print("[pause] skip — 结束剩余", flush=True)
+        return False
+    return True
+
+
+async def file_loop(
+    hub: DisplayHub,
+    path: Path,
+    interval_s: float,
+    pause: bool,
+) -> None:
     lines = iter_fixture_lines(path)
-    print(
-        f"[file] {path}  {len(lines)} lines  interval={interval_s}s",
-        flush=True,
-    )
+    pacing = "pause(Enter/skip)" if pause else f"interval={interval_s}s"
+    print(f"[file] {path}  {len(lines)} lines  {pacing}", flush=True)
     if not lines:
         print("[file] 没有可推送的行（全是空行或注释）", flush=True)
         return
@@ -142,7 +158,13 @@ async def file_loop(hub: DisplayHub, path: Path, interval_s: float) -> None:
     for i, text in enumerate(lines, start=1):
         print(f"[file] {i}/{len(lines)}", flush=True)
         await hub.push(text)
-        if i < len(lines):
+        if i >= len(lines):
+            break
+        if pause:
+            if not await wait_enter_or_skip():
+                print(f"[file] 已跳过剩余 {len(lines) - i} 条", flush=True)
+                break
+        else:
             await asyncio.sleep(interval_s)
     print("[file] done — 服务继续运行，等待客户端。Ctrl-C 退出。", flush=True)
 
@@ -172,7 +194,7 @@ async def main_async(args: argparse.Namespace) -> None:
 
     async with serve(hub.handler, args.host, args.port, ssl=ssl_ctx):
         if args.file:
-            await file_loop(hub, Path(args.file), args.interval)
+            await file_loop(hub, Path(args.file), args.interval, args.pause)
             await asyncio.Future()
         else:
             await stdin_loop(hub)
@@ -187,13 +209,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--file",
         metavar="PATH",
-        help="按行推送文件（等首个客户端连上后，每行一条，间隔 --interval 秒）；省略则走终端交互",
+        help="按行推送文件（等首个客户端连上后，每行一条；默认间隔 --interval 秒）；省略则走终端交互",
     )
     p.add_argument(
         "--interval",
         type=float,
         default=DEFAULT_INTERVAL_S,
-        help="--file 模式行间隔秒数，默认 3",
+        help="--file 且未加 --pause 时的行间隔秒数，默认 3",
+    )
+    p.add_argument(
+        "--pause",
+        action="store_true",
+        help="--file 模式下每条推送后等 stdin 回车再下一条；输入 skip 结束剩余",
     )
     p.add_argument("--cert", help="TLS 证书（启用 wss）")
     p.add_argument("--key", help="TLS 私钥（启用 wss）")
@@ -202,6 +229,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.pause and not args.file:
+        raise SystemExit("--pause 仅用于 --file 模式")
     try:
         asyncio.run(main_async(args))
     except KeyboardInterrupt:

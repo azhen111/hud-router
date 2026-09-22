@@ -241,7 +241,9 @@ evenhub qr --url "http://LAN_IP:8088/webview/index.html"
 | --- | --- |
 | `glasses/webview/index.html` | 单文件插件：WS、状态、调 Even 显示 API |
 | `glasses/display_server.py` | `{"text":...}` 推送服务 |
-| `glasses/fixtures/display_test.txt` | 中 / 日 / 混排 / 超长 / 换行实证夹具 |
+| `glasses/fixtures/display_test.txt` | 通路冒烟夹具（中 / 日 / 混排 / 超长 / 换行） |
+| `glasses/fixtures/capacity_probe.txt` | 可计量容量阶梯（宽 / 行 / Phase1 40 字边界） |
+| `glasses/CAPACITY.md` | 容量怎么测、结果表（未测则留空） |
 | `glasses/README.md` | 本文 |
 
 `--file` 会跳过空行与 `#` 注释，并把字面量 `\n` `\t` `\\` 展开。夹具第 6 行用 `\n` 表示真实换行。
@@ -263,17 +265,10 @@ evenhub qr --url "http://LAN_IP:8088/webview/index.html"
 
 ## 5. 实测显示效果
 
-2026-09-22 本机 LAN `192.168.3.2`：交互模式回车推送与 `--file` 夹具在真机 G2 上均正常显示。
+2026-09-22 本机 LAN `192.168.3.2` 对 `display_test.txt` 的「正常显示」**只是通路冒烟**：证明服务器 → 插件 → BLE → 镜片能把字送上去。它**没有**给出单行字数、一屏行数、折行后截断点，**不能**用来信任 Phase 1 的 40 字预算。
+
+要数字：用 `glasses/fixtures/capacity_probe.txt` + `--pause`，把结果填进 `glasses/CAPACITY.md`。未测之前表里不填猜测。
 
 ```bash
-python glasses/display_server.py --file glasses/fixtures/display_test.txt
+python glasses/display_server.py --file glasses/fixtures/capacity_probe.txt --pause
 ```
-
-| 夹具 | 是否完整显示 | 换行 / 截断 | 缺字 | 备注 |
-| --- | --- | --- | --- | --- |
-| 短中文（≤10） | 是 | 未见异常（夹具按设计含换行与超长探测） | 未见 | 2026-09-22 本机 LAN 实测，用户确认「正常显示」 |
-| 长中文（~40） | 是 | 未见异常（夹具按设计含换行与超长探测） | 未见 | 2026-09-22 本机 LAN 实测，用户确认「正常显示」 |
-| 日文（汉字+平假名+片假名） | 是 | 未见异常（夹具按设计含换行与超长探测） | 未见 | 2026-09-22 本机 LAN 实测，用户确认「正常显示」 |
-| 中英混排 | 是 | 未见异常（夹具按设计含换行与超长探测） | 未见 | 2026-09-22 本机 LAN 实测，用户确认「正常显示」 |
-| 超长（~80） | 是 | 未见异常（夹具按设计含换行与超长探测） | 未见 | 2026-09-22 本机 LAN 实测，用户确认「正常显示」 |
-| 含 `\n` 的两行 | 是 | 未见异常（夹具按设计含换行与超长探测） | 未见 | 2026-09-22 本机 LAN 实测，用户确认「正常显示」 |
