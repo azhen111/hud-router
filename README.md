@@ -63,7 +63,7 @@ Copy `.env.example` to `.env` or export the same variables. Nothing is hardcoded
 
 - `kind`: `answer` | `term` | `number` | `translation` | `none`
 - `answer` is empty when `should_respond` is false
-- Non-empty answers are at most 28 characters (full-width = 1; one G2 line). Over-length answers are converted to `should_respond=false` (`truncated_to_none`); `evaluate.py` reports this as observational `suppressed_over_length`, not an acceptance gate
+- Non-empty answers are at most 28 characters (full-width = 1; one G2 line). Over-length answers are converted to `should_respond=false` (`truncated_to_none`); the model's pre-clear text is kept in `original_answer` only when that flag is true (otherwise empty). `evaluate.py` reports this as observational `suppressed_over_length`, not an acceptance gate
 - `needs_more_context: true` forces `should_respond: false`
 
 ## Run the CLI
@@ -114,6 +114,7 @@ Even with `temperature=0`, about 10% output uncertainty has been observed. **Run
 - Speaker labels from upstream are currently mostly `UNKNOWN`, so the SELF guard rarely fires in practice.
 - Even at `temperature=0`, roughly 10% run-to-run output uncertainty has been observed. Acceptance must be run **5 times**; a single run must not be used as the basis for code or prompt changes.
 - Known API tail-latency jitter: p95 can occasionally exceed 2000ms. Treat that as an observational issue, not an automatic reason to change the router.
+- The OpenAI Python client is constructed with `max_retries=0`. Earlier ~12s evaluate spikes (id=8 / id=25) were consistent with the SDK default `max_retries=2` (retry on timeout / 5xx plus exponential backoff). Timeout or transport error now degrades immediately; there is no retry loop.
 
 ## Phase 2
 

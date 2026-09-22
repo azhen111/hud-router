@@ -160,6 +160,16 @@ def run_cases(cases: Sequence[TestCase]) -> list[CaseResult]:
         t0: float = time.perf_counter()
         result: RouterResult = route(payload)
         latency_ms: float = (time.perf_counter() - t0) * 1000.0
+        timing = result.call_timing or {}
+        ttfb = timing.get("ttfb_ms")
+        total = timing.get("total_ms", latency_ms)
+        ttfb_s = f"{ttfb:.1f}" if isinstance(ttfb, (int, float)) else "n/a"
+        print(
+            f"[evaluate] id={case.id} request_start=0.0ms "
+            f"ttfb={ttfb_s}ms total={float(total):.1f}ms "
+            f"wall={latency_ms:.1f}ms",
+            flush=True,
+        )
         correct: bool = result.should_respond is case.expect
         results.append(
             CaseResult(
@@ -277,6 +287,7 @@ def render_report(rows: Sequence[CaseResult], *, color: bool) -> str:
                 out.append(
                     f"  id={r.case.id}  kind={r.result.kind}  "
                     f"truncated_to_none={r.result.truncated_to_none}  "
+                    f"original_answer={r.result.original_answer!r}  "
                     f"answer={r.result.answer!r}  (limit {MAX_ANSWER_CHARS})"
                 )
     out.append("")
@@ -306,13 +317,20 @@ def render_report(rows: Sequence[CaseResult], *, color: bool) -> str:
         elif _suppressed_over_length(r.result):
             line = paint(line, YELLOW, color)
         out.append(line)
-        dump: str = "model=" + json.dumps(r.result.to_dict(), ensure_ascii=False)
+        dump: str = "model=" + json.dumps(r.result.to_public_dict(), ensure_ascii=False)
         if not r.correct:
             dump = paint(dump, RED, color)
         out.append(dump)
         extra: list[str] = []
         if r.result.answer:
             extra.append(f"answer={r.result.answer!r} ({answer_char_len(r.result.answer)}ch)")
+        if r.result.truncated_to_none and r.result.original_answer:
+            extra.append(
+                f"original_answer={r.result.original_answer!r} "
+                f"({answer_char_len(r.result.original_answer)}ch)"
+            )
+        if r.result.call_timing:
+            extra.append("timing=" + json.dumps(r.result.call_timing, ensure_ascii=False))
         if r.case.kind is not None and r.result.kind != r.case.kind and r.result.should_respond:
             extra.append(f"kind_expect={r.case.kind}")
         if (
@@ -330,7 +348,12 @@ def render_report(rows: Sequence[CaseResult], *, color: bool) -> str:
     out.append(
         "Notes: expected `should_respond` values are not modified. "
         "`kind` / `needs_more_context` on a case are informational. "
-        "`sol` = suppressed_over_length (observational, not an acceptance gate)."
+        "`sol` = suppressed_over_length (observational, not an acceptance gate). "
+        "When sol, `original_answer` is the model's pre-clear text (answer is empty). "
+        "~12s spikes on earlier evals (id=8 / id=25) matched OpenAI SDK default "
+        "max_retries=2 (timeout/5xx + exponential backoff); client is now "
+        "max_retries=0 and degrades immediately. Per-call request_start / ttfb / "
+        "total are in model=... call_timing and on stderr as [router] model call timing."
     )
     return "\n".join(out) + "\n"
 

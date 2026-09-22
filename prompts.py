@@ -88,6 +88,11 @@ glanced at during conversation. Therefore:
 - Same language as the last line
 - If you cannot state it usefully in 40 characters, set
   should_respond: false and say so in reason
+- Never answer with a question. If you would have to ask the speaker
+  what they meant, the referent was not resolvable and you should have
+  set should_respond to false. An answer that asks something back cannot
+  be acted on: the wearer is in a conversation and cannot reply to the
+  display.
 
 ## kind
 - "term"        — glossing a word, acronym, or proper noun
