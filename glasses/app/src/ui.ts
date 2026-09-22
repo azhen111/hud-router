@@ -9,13 +9,17 @@ let recvEl: HTMLDivElement
 let latestEl: HTMLDivElement
 let errorEl: HTMLDivElement
 let latestTextEl: HTMLDivElement
+let captureEl: HTMLDivElement
+let pcmEl: HTMLDivElement
+let roleEl: HTMLDivElement
+let dirEl: HTMLDivElement
 
 export function mountUi() {
   const app = document.querySelector<HTMLDivElement>('#app')!
   app.innerHTML = `
     <main class="panel">
       <header>
-        <h1>HUD Display</h1>
+        <h1>HUD Live</h1>
         <div id="status" class="status status-connecting">Connecting…</div>
       </header>
       <label class="lbl" for="wsUrl">WebSocket URL（ws:// 或 wss://）</label>
@@ -26,6 +30,10 @@ export function mountUi() {
       </div>
       <section class="kv">
         <div class="k">连接</div><div id="connState">disconnected</div>
+        <div class="k">采集</div><div id="captureState">paused</div>
+        <div class="k">已发 PCM</div><div id="pcmCount">0</div>
+        <div class="k">speakerRole</div><div id="lastRole">（无）</div>
+        <div class="k">direction</div><div id="lastDirection">（无）</div>
         <div class="k">已收消息</div><div id="recvCount">0</div>
         <div class="k">最近一条</div><div id="latestMsg" class="mono">（无）</div>
         <div class="k">镜片</div><div id="latestText" class="mono">（无）</div>
@@ -34,7 +42,7 @@ export function mountUi() {
         <h2>最近错误（全文）</h2>
         <div id="errorText" class="mono">（无）</div>
       </section>
-      <footer>Tap temple to connect/disconnect · double-tap to exit.</footer>
+      <footer>Temple tap = pause/resume capture · double-tap = exit · Connect 先连服务器。</footer>
     </main>
   `
   statusEl = app.querySelector('#status')!
@@ -46,6 +54,10 @@ export function mountUi() {
   latestEl = app.querySelector('#latestMsg')!
   latestTextEl = app.querySelector('#latestText')!
   errorEl = app.querySelector('#errorText')!
+  captureEl = app.querySelector('#captureState')!
+  pcmEl = app.querySelector('#pcmCount')!
+  roleEl = app.querySelector('#lastRole')!
+  dirEl = app.querySelector('#lastDirection')!
   injectStyles()
 }
 
@@ -83,6 +95,19 @@ export function setLatestRaw(text: string) {
 
 export function setLatestText(text: string) {
   latestTextEl.textContent = text
+}
+
+export function setCaptureState(text: string) {
+  captureEl.textContent = text
+}
+
+export function setPcmCount(n: number) {
+  pcmEl.textContent = String(n)
+}
+
+export function setLastMeta(role: string, direction: number | null) {
+  roleEl.textContent = role || '（无）'
+  dirEl.textContent = direction === null || direction === undefined ? 'null' : String(direction)
 }
 
 export function showError(err: unknown) {

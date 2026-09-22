@@ -87,6 +87,8 @@ Aggregator only (constructed FINAL sequences; no mic): silence, max-turn, min-ch
 
 **`nova-3`** — current general-purpose streaming ASR (not Flux). Supports `zh` and `ja`. Connect sets `model`, `language`, `encoding=linear16`, `sample_rate=16000`, `channels=1`, `interim_results=true`, `punctuate=true`. **Endpointing is not tuned.**
 
+`DeepgramPcmSession` in `stream.py` is the same listen options without a mic (PCM bytes in). `server/live.py` uses it. Handshake wait is 60s. M1/M2 CLI (`run_mic_deepgram_session`) is unchanged.
+
 ## Install
 
 ```bash

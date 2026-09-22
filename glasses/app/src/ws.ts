@@ -154,6 +154,14 @@ export function createWsClient(handlers: WsHandlers) {
       }
       handlers.onState('disconnected')
     },
+    send(data: string): boolean {
+      if (!socket || socket.readyState !== WebSocket.OPEN) return false
+      socket.send(data)
+      return true
+    },
+    get ready() {
+      return !!socket && socket.readyState === WebSocket.OPEN
+    },
     get wantConnected() {
       return wantConnected
     },

@@ -34,6 +34,9 @@ BLOCK_FRAMES: int = 800  # 50 ms
 # Current general streaming model. Supports zh / zh-CN and ja.
 # See asr/README.md for why this name (not Flux, not nova-2).
 DEEPGRAM_MODEL: str = "nova-3"
+# Deepgram listen handshake wait. Live path uses this; M1/M2 connect is the
+# same SDK enter() and would hang forever if the WS never opens.
+DEEPGRAM_HANDSHAKE_TIMEOUT_S: float = 60.0
 
 # Latency (audio-in → FINAL return), measured as:
 #   latency = t_final_recv - t_audio_end
@@ -401,6 +404,148 @@ def require_api_key() -> str:
     return key
 
 
+def listen_connect_kwargs(language: str) -> dict[str, Any]:
+    """Shared nova-3 / 16 kHz mono s16le options for M1 and live PCM."""
+    return {
+        "model": DEEPGRAM_MODEL,
+        "language": language,
+        "encoding": "linear16",
+        "sample_rate": SAMPLE_RATE,
+        "channels": CHANNELS,
+        "interim_results": True,
+        "punctuate": True,
+    }
+
+
+class DeepgramPcmSession:
+    """Deepgram listen.v1 fed by PCM bytes (no microphone).
+
+    Used by `server/live.py`. M1/M2 CLIs keep `run_mic_deepgram_session`.
+    Handshake waits at most `DEEPGRAM_HANDSHAKE_TIMEOUT_S` (60s).
+    """
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        language: str,
+        on_message: Callable[[object], None],
+        on_error: Callable[[object], None] | None = None,
+        handshake_timeout_s: float = DEEPGRAM_HANDSHAKE_TIMEOUT_S,
+    ) -> None:
+        self._api_key = api_key
+        self._language = language
+        self._on_message = on_message
+        self._on_error = on_error
+        self._handshake_timeout_s = handshake_timeout_s
+        self._halt = threading.Event()
+        self._audio_q: queue.Queue[bytes | None] = queue.Queue()
+        self._cm: Any = None
+        self._connection: Any = None
+        self._listen_thread: threading.Thread | None = None
+        self._send_thread: threading.Thread | None = None
+        self._keep_thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        client: DeepgramClient = DeepgramClient(api_key=self._api_key)
+        self._cm = client.listen.v1.connect(**listen_connect_kwargs(self._language))
+        box: list[tuple[str, Any]] = []
+
+        def _enter() -> None:
+            try:
+                box.append(("ok", self._cm.__enter__()))
+            except Exception as exc:
+                box.append(("err", exc))
+
+        waiter = threading.Thread(target=_enter, name="deepgram-handshake", daemon=True)
+        waiter.start()
+        waiter.join(self._handshake_timeout_s)
+        if waiter.is_alive():
+            raise TimeoutError(
+                f"Deepgram handshake timed out after {self._handshake_timeout_s:.0f}s"
+            )
+        if not box:
+            raise TimeoutError("Deepgram handshake returned no result")
+        kind, val = box[0]
+        if kind == "err":
+            raise val
+        self._connection = val
+
+        def _on_error(err: object) -> None:
+            if self._on_error is not None:
+                self._on_error(err)
+            else:
+                print(f"{Fore.RED}deepgram error: {err}{Style.RESET_ALL}", file=sys.stderr)
+
+        self._connection.on(EventType.MESSAGE, self._on_message)
+        self._connection.on(EventType.ERROR, _on_error)
+        self._listen_thread = threading.Thread(
+            target=self._connection.start_listening,
+            name="deepgram-listen",
+            daemon=True,
+        )
+        self._listen_thread.start()
+
+        def sender() -> None:
+            while True:
+                chunk: bytes | None = self._audio_q.get()
+                if chunk is None:
+                    break
+                if self._halt.is_set():
+                    continue
+                try:
+                    self._connection.send_media(chunk)
+                except Exception as exc:
+                    _on_error(exc)
+                    self._halt.set()
+                    break
+
+        self._send_thread = threading.Thread(target=sender, name="deepgram-send", daemon=True)
+        self._send_thread.start()
+
+        def keeper() -> None:
+            while not self._halt.wait(8.0):
+                conn = self._connection
+                if conn is None:
+                    return
+                try:
+                    if hasattr(conn, "send_keep_alive"):
+                        conn.send_keep_alive()
+                except Exception:
+                    return
+
+        self._keep_thread = threading.Thread(target=keeper, name="deepgram-keepalive", daemon=True)
+        self._keep_thread.start()
+
+    def send_pcm(self, chunk: bytes) -> None:
+        if self._halt.is_set() or not chunk:
+            return
+        self._audio_q.put(chunk)
+
+    def close(self) -> None:
+        self._halt.set()
+        try:
+            self._audio_q.put(None)
+        except Exception:
+            pass
+        conn = self._connection
+        if conn is not None:
+            try:
+                conn.send_finalize()
+            except Exception:
+                pass
+        if self._send_thread is not None:
+            self._send_thread.join(timeout=2.0)
+        cm = self._cm
+        if cm is not None:
+            try:
+                cm.__exit__(None, None, None)
+            except Exception:
+                pass
+        self._connection = None
+        self._cm = None
+
+
 def run_mic_deepgram_session(
     *,
     api_key: str,
@@ -426,15 +571,7 @@ def run_mic_deepgram_session(
         else:
             print(f"{Fore.RED}deepgram error: {err}{Style.RESET_ALL}", file=sys.stderr)
 
-    with client.listen.v1.connect(
-        model=DEEPGRAM_MODEL,
-        language=language,
-        encoding="linear16",
-        sample_rate=SAMPLE_RATE,
-        channels=CHANNELS,
-        interim_results=True,
-        punctuate=True,
-    ) as connection:
+    with client.listen.v1.connect(**listen_connect_kwargs(language)) as connection:
         connection.on(EventType.MESSAGE, on_message)
         connection.on(EventType.ERROR, _on_error)
 

@@ -9,11 +9,11 @@
   "permissions": [
     {
       "name": "g2-microphone",
-      "desc": "Kept from the official ASR template; unused on the M4 display path."
+      "desc": "G2 four-mic PCM uplink to server/live.py (Deepgram + router)."
     },
     {
       "name": "network",
-      "desc": "WebSocket display push from the LAN server.",
+      "desc": "One WebSocket for PCM uplink and text downlink to server/live.py.",
       "whitelist": [
         "http://192.168.3.2:8766",
         "ws://192.168.3.2:8766",

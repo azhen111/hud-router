@@ -297,3 +297,22 @@ https://github.com/nickustinov/even-g2-notes/blob/227c866718fbb68907ef723592c8a4
 官方 caveat：渲染非像素级一致；无真实 BLE/权限/后台。notes 另写：模拟器 0.7.1 拒 >4 容器、image 大于 200×100（真机可以）。  
 https://hub.evenrealities.com/docs/test/simulator  
 https://github.com/nickustinov/even-g2-notes/blob/227c866718fbb68907ef723592c8a4d90630e823/docs/simulator.md
+
+---
+
+## 11. speakerRole 真机分布（跑通后填）
+
+文档：`Self` / `Other` / `Unknown` 是 **App 音频算法**，不是固件身份。手机麦 / 旧 Host → `Unknown`。  
+https://www.npmjs.com/package/@evenrealities/even_hub_sdk  
+https://hub.evenrealities.com/docs/build/device-apis
+
+本表在戴镜跑 `server/live.py` 后按 `live_*.jsonl` 的 `speakerRole` 统计填写。**不要编造。**
+
+| 值 | 帧数 / 段数 | 占比 | 何时出现（观察） |
+| --- | --- | --- | --- |
+| `self` / Self |  |  | 跑通后填 |
+| `other` / Other |  |  | 跑通后填 |
+| `unknown` / Unknown |  |  | 跑通后填 |
+| 缺字段 / null |  |  | 跑通后填 |
+
+`direction`（int16 或 null）同场记下，单位文档未换算。
