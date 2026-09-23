@@ -278,8 +278,18 @@ def degrade(reason: str) -> RouterResult:
     )
 
 
-def normalize_result(raw: Mapping[str, Any]) -> RouterResult:
-    """Coerce model JSON into the strict output contract. Never raises."""
+def normalize_result(
+    raw: Mapping[str, Any],
+    *,
+    ignore_answer: bool = False,
+) -> RouterResult:
+    """Coerce model JSON into the strict output contract. Never raises.
+
+    ``ignore_answer`` is for the live two-tier judge: keep
+    should_respond / confidence / kind / reason / needs_more_context, but
+    do not let the unused ``answer`` field flip a trigger (over-length).
+    The raw answer is still stored for jsonl comparison.
+    """
     needs_more: bool = _as_bool(raw.get("needs_more_context"), False)
     should: bool = _as_bool(raw.get("should_respond"), False)
     if needs_more:
@@ -295,7 +305,12 @@ def normalize_result(raw: Mapping[str, Any]) -> RouterResult:
     over_length: bool = answer_char_len(answer) > MAX_ANSWER_CHARS
     truncated_to_none: bool = False
     original_answer: str = ""
-    if over_length:
+    if ignore_answer:
+        # Judge answer is unused for display; length must not kill the trigger.
+        over_length = False
+        truncated_to_none = False
+        original_answer = ""
+    elif over_length:
         # Do not truncate-and-keep: a >56 answer is a failed trigger.
         # Keep the pre-clear text so evaluate/reports can show what the
         # model actually wrote (id=9 / id=29 were blank without this).
@@ -322,14 +337,18 @@ def normalize_result(raw: Mapping[str, Any]) -> RouterResult:
     )
 
 
-def parse_model_output(text: str | None) -> RouterResult:
+def parse_model_output(
+    text: str | None,
+    *,
+    ignore_answer: bool = False,
+) -> RouterResult:
     """Parse model text into RouterResult; illegal JSON degrades, never raises."""
     if text is None or not str(text).strip():
         return degrade("empty model output")
     obj: dict[str, Any] | None = extract_json_object(str(text))
     if obj is None:
         return degrade("unparseable model JSON")
-    return normalize_result(obj)
+    return normalize_result(obj, ignore_answer=ignore_answer)
 
 
 def _json_mode_unsupported(exc: BaseException) -> bool:
@@ -483,6 +502,7 @@ def route(
     *,
     client: OpenAI | None = None,
     completion_fn: Callable[[list[dict[str, str]]], str] | None = None,
+    ignore_answer: bool = False,
 ) -> RouterResult:
     """Decide whether to show a short HUD answer for the last transcript turn.
 
@@ -493,6 +513,9 @@ def route(
     Speaker labels (SELF / OTHER / UNKNOWN) are context for the model and
     for logs only. A last-speaker SELF turn is sent to the model the same
     way as OTHER — there is no pre-model hard exclude.
+
+    ``ignore_answer`` (live two-tier judge): do not convert an over-length
+    unused ``answer`` into ``should_respond=false``. Display uses ``answer()``.
     """
     turns: list[Turn] = window_turns(payload)
     locale: str = str(payload.get("locale") or "ja")
@@ -522,7 +545,7 @@ def route(
         failed = degrade(f"model call failed: {type(exc).__name__}")
         attach: CallTiming | None = timing if timing is not None else _LAST_CALL_TIMING
         return replace(failed, call_timing=attach) if attach is not None else failed
-    parsed: RouterResult = parse_model_output(raw_text)
+    parsed: RouterResult = parse_model_output(raw_text, ignore_answer=ignore_answer)
     if timing is not None:
         return replace(parsed, call_timing=timing)
     return parsed

@@ -53,6 +53,7 @@ python server/live.py --lang multi --log live_multi.jsonl
 python server/live.py --no-policy --log live_nopolicy.jsonl
 python server/live.py --no-fix --log live_nofix.jsonl
 python server/live.py --single-shot --log live_singleshot.jsonl
+python server/live.py --no-answer-tier --log live_singleshot.jsonl
 ```
 
 启动横幅必须能看到 `router_timeout_ms=3000`（以及 `source=default|cli|env`）和 `policy=on` / `policy=off`。若 `.env` 里还留着 `LIVE_ROUTER_TIMEOUT_MS=1800`，横幅会打印 `source=env LIVE_ROUTER_TIMEOUT_MS=1800`——那不是代码默认，是环境覆盖。
@@ -74,18 +75,20 @@ npx evenhub-simulator http://localhost:5173
 4. 手机页填 `ws://<电脑LAN>:8766`（灰色占位符不是值），点 **Connect**。
    `app.json` `network.whitelist` 须含该 origin（QR 开发态可能跳过，正式包必须写全，无通配符）。
 5. 状态出现 `deepgram_ready` 后开麦。镜腿单击 = 暂停/恢复采集；双击 = `shutDownPageContainer(1)` 退出。
-6. 对面**或佩戴者**问技术问题都会进 `route()`。`should_respond=true` 后先走 `display_policy`（预算 / 置信 / 去重 / 长度 / TTL），通过才 `{"text": display_text}` 上镜。约 10s 后独立定时器再推 `・` 清屏（无 hide API，见 `glasses/SDK_NOTES.md`）。`--no-policy` 时 TRIGGER 直接推 router `answer`，和 M1 一样。
+6. 对面**或佩戴者**问技术问题都会进 `route()`。`should_respond=true` 后先走 `display_policy`（预算 / 置信 / 去重 / 长度 / TTL），通过才 `{"text": display_text}` 上镜。约 10s 后独立定时器再推 `・` 清屏（无 hide API，见 `glasses/SDK_NOTES.md`）。`--no-policy` 时 TRIGGER 直接推 **answer 级**正文（`--single-shot` 则推 judge.answer），和 M1 一样不经策略。
 
 物理验收（戴上 G2、看见字）由使用者完成。本环境不编造硬件结果。A/B 清单：`server/ASR_EVAL.md`。朗读稿：`server/fixtures/it_questions_20.txt`。
 
 ### 终端
 
 ```
+[00:12.20]   → fix  '线流' → '限流'  term=限流  sim=1.00
 [00:12.30] Other  这个接口保证幂等吗
-[00:13.45]   → TRIGGER  conf=0.90  lat=980ms
-[00:13.45]     幂等：多次执行结果相同
-[00:13.45]   → policy  action=push  mode=full  ttl=10000ms
-[00:23.45]   → policy_clear  text='・'
+[00:13.45]   → TRIGGER  conf=0.90  judge_ms=980
+[00:13.45]     judge.answer ignored  kind=term
+[00:17.10]     幂等：多次执行结果相同
+[00:17.10]   → policy  action=push  mode=full  ttl=10000ms
+[00:27.10]   → policy_clear  text='・'
 
 [00:18.02] Self  嗯嗯明白了
 [00:18.90]   → skip  conf=0.95  reason: backchannel
@@ -168,7 +171,7 @@ python server/live.py --lang multi --log live_multi.jsonl
 | min route chars | 3 | `--min-route-chars` / `MIN_ROUTE_CHARS` | 聚合后短于此且未命中 keyterm 则 `skip_reason=too_short` |
 | keyterm 词表 | `server/terms_zh.json` | `--terms` / `LIVE_TERMS_PATH` | nova-3 `keyterm` 列表 |
 | 关闭 keyterm | 关 | `--no-keyterms` | A/B 基线 |
-| two-tier | **开** | `--single-shot` / `LIVE_TWO_TIER=0` | 关则只用 judge.answer（A/B） |
+| two-tier | **开** | `--single-shot` / `--no-answer-tier` / `LIVE_TWO_TIER=0` | 关则只用 judge.answer（A/B） |
 | ANSWER_MODEL | =ROUTER_MODEL | `ANSWER_MODEL` | 未设则与 judge 同模型 |
 | answer timeout | 4000 ms | `--answer-timeout-ms` / `ANSWER_TIMEOUT_MS` | 仅 trigger 后调用；超时丢轮、不重试 |
 | transcript fix | **开** | `--no-fix` / `LIVE_NO_FIX` | 聚合后、judge 前确定性纠错 |

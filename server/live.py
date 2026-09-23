@@ -370,9 +370,15 @@ def call_with_timeout(fn: Any, timeout_s: float, name: str) -> tuple[Any, bool]:
 def route_with_timeout(
     payload: dict[str, object],
     timeout_s: float,
+    *,
+    ignore_answer: bool = False,
 ) -> tuple[RouterResult | None, bool]:
     """Call route() once. On timeout return (None, True). No retry."""
-    item, timed_out = call_with_timeout(lambda: route(payload), timeout_s, "live-judge")
+    item, timed_out = call_with_timeout(
+        lambda: route(payload, ignore_answer=ignore_answer),
+        timeout_s,
+        "live-judge",
+    )
     if timed_out:
         return None, True
     if isinstance(item, RouterResult):
@@ -913,7 +919,9 @@ class LiveSession:
         self, payload: dict[str, object], timeout_s: float
     ) -> tuple[RouterResult | None, bool]:
         with self.route_lock:
-            return route_with_timeout(payload, timeout_s)
+            return route_with_timeout(
+                payload, timeout_s, ignore_answer=self.settings.two_tier
+            )
 
     def _answer_once(
         self, payload: dict[str, object], kind: str, timeout_s: float
@@ -1095,6 +1103,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--single-shot",
+        "--no-answer-tier",
         action="store_true",
         help="A/B: one judge call only; use judge answer for display (LIVE_TWO_TIER=0)",
     )

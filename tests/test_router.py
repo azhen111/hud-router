@@ -330,6 +330,42 @@ class TestAnswerTier(unittest.TestCase):
         )
         self.assertTrue(is_skip_answer(text))
 
+    def test_ignore_answer_keeps_overlength_trigger(self) -> None:
+        long_answer = "X" * (MAX_ANSWER_CHARS + 8)
+        payload = {
+            "should_respond": True,
+            "confidence": 0.91,
+            "kind": "term",
+            "reason": "gloss",
+            "answer": long_answer,
+            "needs_more_context": False,
+        }
+        killed = normalize_result(payload)
+        self.assertFalse(killed.should_respond)
+        self.assertTrue(killed.truncated_to_none)
+        kept = normalize_result(payload, ignore_answer=True)
+        self.assertTrue(kept.should_respond)
+        self.assertEqual(kept.kind, "term")
+        self.assertFalse(kept.truncated_to_none)
+        self.assertEqual(kept.answer, long_answer)
+
+        def fake_complete(_messages: list[dict[str, str]]) -> str:
+            return json.dumps(payload, ensure_ascii=False)
+
+        routed = route(
+            {
+                "recent_turns": [
+                    {"speaker": "OTHER", "text": "JWT 是什么", "ts": 1}
+                ],
+                "locale": "zh",
+            },
+            completion_fn=fake_complete,
+            ignore_answer=True,
+        )
+        self.assertTrue(routed.should_respond)
+        self.assertEqual(routed.kind, "term")
+        self.assertFalse(routed.truncated_to_none)
+
     def test_unset_answer_model_equals_router(self) -> None:
         with patch.dict("os.environ", {"OPENAI_API_KEY": "k", "ROUTER_MODEL": "gpt-4o-mini"}, clear=False):
             os_env_pop = "ANSWER_MODEL"

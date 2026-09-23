@@ -12,7 +12,7 @@
 - 默认加固：keyterm 开、`--silence-ms 1200`、`--min-route-chars 3`（命中词表豁免短句）、router timeout **3000ms**（启动横幅 `router_timeout_ms=3000`）、**policy 开**。Self 发话也会进 `route()`。
 - A/B：`--lang multi`（Deepgram `language=multi` + 同一 keyterm；router locale 仍 zh）。官方 `multi` 码切换列表不含中文，见 `server/README.md`。
 - A/B：`--no-policy` 关闭显示策略。
-- A/B：`--no-fix` 关闭纠错；`--single-shot` 关闭 answer 级（用 judge.answer）。
+- A/B：`--no-fix` 关闭纠错；`--single-shot` / `--no-answer-tier` 关闭 answer 级（用 judge.answer）。
 - 默认两级：judge 超时 3000ms，answer 超时 4000ms。未设 `ANSWER_MODEL` 则两级同一模型。
 
 ## 纠错层离线样本（10 条已知错听）

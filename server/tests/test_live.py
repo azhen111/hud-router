@@ -148,6 +148,14 @@ class KeytermLoad(unittest.TestCase):
             "pud",
             "线流",
             "回拱",
+            "FLCK",
+            "Bocker",
+            "HTL",
+            "postgress",
+            "ICD",
+            "RST",
+            "MyCircle",
+            "hostgreatcircle",
         }
         missing = required - set(terms)
         self.assertEqual(missing, set())
@@ -336,6 +344,10 @@ class TwoTierWiring(unittest.TestCase):
             parse_args(["--single-shot", "--log", "/tmp/live_ss.jsonl"])
         )
         self.assertFalse(settings.two_tier)
+        alias = build_settings(
+            parse_args(["--no-answer-tier", "--log", "/tmp/live_nat.jsonl"])
+        )
+        self.assertFalse(alias.two_tier)
         text, skip = pick_display_answer(
             two_tier=False,
             judge_answer="JWT：JSON Web Token",
