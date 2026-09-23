@@ -28,7 +28,14 @@ from server.live import (
     too_short_for_router,
 )
 from settings import DEFAULT_AGG_SILENCE_MS
-from stream import listen_connect_kwargs, load_keyterms
+from stream import (
+    DEEPGRAM_KEYTERM_MAX,
+    listen_connect_kwargs,
+    load_keyterms,
+    load_keyterms_for_deepgram,
+    sanitize_deepgram_keyterms,
+)
+from server.transcript_fix import load_term_entries
 from server.tests.test_display_policy import FakeClock, make_policy
 
 
@@ -122,10 +129,12 @@ class MinRouteChars(unittest.TestCase):
 
 
 class KeytermLoad(unittest.TestCase):
-    def test_terms_file_has_about_fifty_plain_terms(self) -> None:
-        terms = load_keyterms(DEFAULT_TERMS_PATH)
+    def test_deepgram_gets_canons_only(self) -> None:
+        terms = load_keyterms_for_deepgram(DEFAULT_TERMS_PATH)
+        self.assertEqual(terms, load_keyterms(DEFAULT_TERMS_PATH))
         self.assertGreaterEqual(len(terms), 45)
-        self.assertLessEqual(len(terms), 180)
+        self.assertLessEqual(len(terms), DEEPGRAM_KEYTERM_MAX)
+        self.assertLessEqual(len(terms), 80)
         required = {
             "Kubernetes",
             "Kafka",
@@ -141,6 +150,16 @@ class KeytermLoad(unittest.TestCase):
             "幂等",
             "分片",
             "扩容",
+            "Flex",
+            "Docker",
+            "HTTP",
+            "PostgreSQL",
+            "MySQL",
+            "CICD",
+        }
+        missing = required - set(terms)
+        self.assertEqual(missing, set())
+        variants = {
             "库布尔netes",
             "GrafficQL",
             "CFCAR",
@@ -158,16 +177,39 @@ class KeytermLoad(unittest.TestCase):
             "hostgreatcircle",
             "GRPC",
             "Jva",
+            "CI/CD",
         }
-        missing = required - set(terms)
-        self.assertEqual(missing, set())
+        leaked = variants & set(terms)
+        self.assertEqual(leaked, set())
         self.assertEqual(len(terms), len(set(terms)))
         for term in terms:
             self.assertIsInstance(term, str)
             self.assertNotIn(",", term)
+            self.assertNotIn("/", term)
             self.assertFalse(term.endswith(":1"))
             self.assertFalse(term.endswith(":5"))
             self.assertNotIn(":", term)
+
+    def test_object_variants_stay_on_fix_layer(self) -> None:
+        dg = set(load_keyterms_for_deepgram(DEFAULT_TERMS_PATH))
+        entries = load_term_entries(DEFAULT_TERMS_PATH)
+        jwt = next(e for e in entries if e.term == "JWT")
+        self.assertIn("GWT", jwt.variants)
+        self.assertIn("JWA", jwt.variants)
+        self.assertNotIn("GWT", dg)
+        self.assertIn("JWT", dg)
+        cicd = next(e for e in entries if e.term == "CI/CD")
+        self.assertIn("ICD", cicd.variants)
+        self.assertNotIn("CI/CD", dg)
+
+    def test_sanitize_strips_slash_and_caps(self) -> None:
+        self.assertEqual(sanitize_deepgram_keyterms(["CI/CD", "JWT"]), ["CICD", "JWT"])
+        flooded = [f"T{i}" for i in range(97)]
+        capped = sanitize_deepgram_keyterms(flooded)
+        self.assertEqual(len(capped), DEEPGRAM_KEYTERM_MAX)
+        kwargs = listen_connect_kwargs("zh", flooded)
+        self.assertEqual(len(kwargs["keyterm"]), DEEPGRAM_KEYTERM_MAX)
+        self.assertNotIn("keywords", kwargs)
 
     def test_connect_kwargs_uses_keyterm_not_keywords(self) -> None:
         terms = ["REST", "Kafka", "幂等"]
@@ -192,6 +234,7 @@ class KeytermLoad(unittest.TestCase):
         probe = listen_connect_kwargs(settings.lang, settings.keyterms)
         self.assertNotIn("keywords", probe)
         self.assertEqual(len(probe["keyterm"]), len(settings.keyterms))
+        self.assertLessEqual(len(probe["keyterm"]), DEEPGRAM_KEYTERM_MAX)
         off = build_settings(
             parse_args(["--no-keyterms", "--min-route-chars", "6", "--silence-ms", "800"])
         )
@@ -340,6 +383,9 @@ class TwoTierWiring(unittest.TestCase):
         self.assertIn("answer_timeout_ms=4000", out)
         self.assertIn("judge.answer ignored", out)
         self.assertIn("fix=on", out)
+        self.assertIn("keyterms_dg=", out)
+        self.assertIn("fix_entries=", out)
+        self.assertIn("canon only", out)
 
     def test_single_shot_uses_judge_answer(self) -> None:
         settings = build_settings(

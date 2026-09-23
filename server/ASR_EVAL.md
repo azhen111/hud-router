@@ -75,7 +75,7 @@ python server/live.py --lang zh --no-keyterms --log live_before_zh.jsonl
 python server/live.py --lang zh --log live_after_zh.jsonl
 ```
 
-同样 20 句。启动日志应有一行 `keyterms=N from ... (nova-3 uses keyterm, not keywords)`。
+同样 20 句。启动日志应有 `keyterms_dg=N  fix_entries=M`（N 是 canonical，≤80；M 是纠错条目）。`N` 不应接近 90。
 
 ## zh vs multi（同一加固设置）
 

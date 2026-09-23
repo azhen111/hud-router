@@ -10,6 +10,7 @@ from server.live import DEFAULT_TERMS_PATH, build_settings, parse_args
 from server.transcript_fix import (
     DEFAULT_FIX_SIMILARITY,
     apply_fix,
+    flatten_keyterms,
     load_term_entries,
     similarity,
 )
@@ -45,6 +46,9 @@ class LoadEntries(unittest.TestCase):
         grpc = next(e for e in entries if e.term == "gRPC")
         self.assertIn("GRPC", grpc.variants)
         self.assertGreaterEqual(len(entries), 40)
+        flat = flatten_keyterms(entries)
+        self.assertIn("GWT", flat)
+        self.assertIn("JWT", flat)
 
 
 class ExactAndFuzzy(unittest.TestCase):

@@ -18,7 +18,7 @@ Nova-3 **不支持** `keywords`（HTTP 400 / 流式 WS 静默断开）。必须�
 - Keywords 页写明 Nova-3 必须改用 Keyterm：https://developers.deepgram.com/docs/keywords
 - streaming nova-3 + keywords 失败：https://github.com/deepgram/deepgram-js-sdk/issues/474
 
-词表：`server/terms_zh.json`。元素可以是纯字符串，或 `{"term":"JWT","variants":["GWT","JWA"]}`。Deepgram `keyterm` 会抽出 `term` + 全部 variants（仍不要 `:权重`）。纠错层用同一张表做确定性模糊匹配（拉丁 token + 中英夹杂如 `库布尔netes` + 中文 variants 精确替换）。单字助词不会粘到后面的英文（`和GraphQL`）。`--no-keyterms` 只关 Deepgram 词表；`--no-fix` 关纠错。会话错听夹具：`server/fixtures/asr_mistranscribe_samples.json`。
+词表：`server/terms_zh.json`。元素可以是纯字符串，或 `{"term":"JWT","variants":["GWT","JWA"]}`。Deepgram `keyterm` **只发 canonical**（`term` / 纯字符串），**不发 variants**。`CI/CD` 会变成 `CICD`（`/` 不能进 query）。nova-3 zh 实测约 80 条握手成功、90+ 会 HTTP 400，代码硬顶 `DEEPGRAM_KEYTERM_MAX=80`。纠错层仍用同一张表的 variants。启动横幅：`keyterms_dg=N  fix_entries=M`。`--no-keyterms` 只关 Deepgram 词表；`--no-fix` 关纠错。会话错听夹具：`server/fixtures/asr_mistranscribe_samples.json`。
 
 官方写明 **Nova-3 的 monolingual 和 multilingual 都可以用 `keyterm`**：https://developers.deepgram.com/docs/keyterm 。Self-hosted 2025-12-10 changelog 也写了 Nova-3 Multi 的 multilingual keyterm（最多约 500 token）：https://developers.deepgram.com/changelog/2025/12/10 。旧版 hosted/self-hosted 模型若报 `The selected Nova-3 model does not support keyterm prompting`，是模型版本问题，不是 `language=multi` 本身禁 keyterm。本仓库对 `zh` 和 `multi` 都传同一份 `keyterm` 列表，从不传 `keywords`。
 
@@ -169,8 +169,8 @@ python server/live.py --lang multi --log live_multi.jsonl
 | DG handshake | 60 s | `--handshake-timeout-s` / `DEEPGRAM_HANDSHAKE_TIMEOUT_S` | Deepgram listen 握手 |
 | agg silence | 1200 ms | `--silence-ms` / `AGG_SILENCE_MS` | 独立 ticker 每 50ms `tick()`；最后一条 FINAL 后再等这么久就关窗，不必再来 ASR |
 | min route chars | 3 | `--min-route-chars` / `MIN_ROUTE_CHARS` | 聚合后短于此且未命中 keyterm 则 `skip_reason=too_short` |
-| keyterm 词表 | `server/terms_zh.json` | `--terms` / `LIVE_TERMS_PATH` | nova-3 `keyterm` 列表 |
-| 关闭 keyterm | 关 | `--no-keyterms` | A/B 基线 |
+| keyterm 词表 | `server/terms_zh.json` | `--terms` / `LIVE_TERMS_PATH` | Deepgram 只收 canonical，≤80 |
+| 关闭 keyterm | 关 | `--no-keyterms` | A/B 基线；fix variants 仍可用 |
 | two-tier | **开** | `--single-shot` / `--no-answer-tier` / `LIVE_TWO_TIER=0` | 关则只用 judge.answer（A/B） |
 | ANSWER_MODEL | =ROUTER_MODEL | `ANSWER_MODEL` | 未设则与 judge 同模型 |
 | answer timeout | 4000 ms | `--answer-timeout-ms` / `ANSWER_TIMEOUT_MS` | 仅 trigger 后调用；超时丢轮、不重试 |

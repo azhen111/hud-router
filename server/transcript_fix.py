@@ -106,7 +106,7 @@ def load_term_entries(path: Path) -> list[TermEntry]:
 
 
 def flatten_keyterms(entries: list[TermEntry]) -> list[str]:
-    """Plain strings for Deepgram ``keyterm`` (canonical + variants)."""
+    """Canon + variants for the fix layer / short-filter. Not for Deepgram."""
     out: list[str] = []
     seen: set[str] = set()
     for entry in entries:

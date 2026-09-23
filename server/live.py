@@ -53,11 +53,13 @@ from transcript_fix import (
     DEFAULT_FIX_SIMILARITY,
     TermEntry,
     apply_fix,
+    flatten_keyterms,
     load_term_entries,
 )
 from settings import DEFAULT_AGG_MAX_TURN_MS, DEFAULT_AGG_SILENCE_MS
 from stream import (
     DEEPGRAM_HANDSHAKE_TIMEOUT_S,
+    DEEPGRAM_KEYTERM_MAX,
     DEEPGRAM_MODEL,
     SAMPLE_RATE,
     DeepgramPcmSession,
@@ -681,7 +683,9 @@ class LiveSession:
             flush=True,
         )
         if too_short_for_router(
-            text, self.settings.min_route_chars, self.settings.keyterms
+            text,
+            self.settings.min_route_chars,
+            flatten_keyterms(self.settings.fix_entries) or self.settings.keyterms,
         ):
             n = len(text.strip())
             reason = (
@@ -1235,8 +1239,10 @@ def log_startup(settings: LiveSettings) -> None:
         flush=True,
     )
     print(
-        f"keyterms={n} from {src}  "
-        "(nova-3 uses keyterm, not keywords; see https://developers.deepgram.com/docs/keyterm)",
+        f"keyterms_dg={n}  fix_entries={len(settings.fix_entries)}  "
+        f"from {src}  "
+        f"(canon only, cap {DEEPGRAM_KEYTERM_MAX}; variants are fix-only; "
+        "nova-3 uses keyterm, not keywords)",
         flush=True,
     )
     pol = settings.policy
@@ -1278,6 +1284,11 @@ async def run_server(settings: LiveSettings, dg_key: str) -> None:
     probe = listen_connect_kwargs(settings.lang, settings.keyterms or None)
     if "keywords" in probe:
         raise RuntimeError("nova-3 connect must not set keywords")
+    dg_n = len(probe.get("keyterm") or [])
+    if dg_n > DEEPGRAM_KEYTERM_MAX:
+        raise RuntimeError(
+            f"nova-3 keyterm count {dg_n} exceeds cap {DEEPGRAM_KEYTERM_MAX}"
+        )
     jsonl = settings.log_path.open("a", encoding="utf-8")
     jsonl_lock = threading.Lock()
     started = time.perf_counter()

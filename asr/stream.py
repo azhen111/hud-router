@@ -13,7 +13,7 @@ import queue
 import sys
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +37,9 @@ DEEPGRAM_MODEL: str = "nova-3"
 # Deepgram listen handshake wait. Live path uses this; M1/M2 connect is the
 # same SDK enter() and would hang forever if the WS never opens.
 DEEPGRAM_HANDSHAKE_TIMEOUT_S: float = 60.0
+# Empirically nova-3 zh handshake fails around 90+ keyterm values (HTTP 400).
+# 80 connected; never send more. Variants are fix-layer only.
+DEEPGRAM_KEYTERM_MAX: int = 80
 
 # Latency (audio-in → FINAL return), measured as:
 #   latency = t_final_recv - t_audio_end
@@ -404,12 +407,44 @@ def require_api_key() -> str:
     return key
 
 
-def load_keyterms(path: Path) -> list[str]:
-    """Load plain keyterm strings. Nova-3 must not receive `keywords` or weights.
+def _is_legacy_weight_term(term: str) -> bool:
+    """True for old keywords intensifiers like term:1.5 (not a keyterm)."""
+    if ":" not in term:
+        return False
+    maybe_w = term.rsplit(":", 1)[-1].lstrip("+-")
+    return maybe_w.replace(".", "", 1).isdigit()
 
-    https://developers.deepgram.com/docs/keyterm
-    Keywords page: Nova-3 must use Keyterm Prompting (not `keywords`).
+
+def sanitize_deepgram_keyterms(
+    terms: Sequence[str],
+    *,
+    max_terms: int = DEEPGRAM_KEYTERM_MAX,
+) -> list[str]:
+    """Canon list for nova-3 ``keyterm``: no variants, no slashes, cap 80.
+
+    ``CI/CD`` becomes ``CICD`` (slash is unsafe in the listen query string).
     """
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in terms:
+        term = str(raw).strip()
+        if not term or term.startswith("#") or _is_legacy_weight_term(term):
+            continue
+        if "/" in term:
+            term = term.replace("/", "")
+            if not term:
+                continue
+        if term in seen:
+            continue
+        seen.add(term)
+        out.append(term)
+    if len(out) > max_terms:
+        out = out[:max_terms]
+    return out
+
+
+def load_canonical_terms(path: Path) -> list[str]:
+    """``term`` field or bare string. ASR variants are not included."""
     raw_obj: object = json.loads(path.read_text(encoding="utf-8"))
     items: list[object]
     if isinstance(raw_obj, list):
@@ -422,30 +457,29 @@ def load_keyterms(path: Path) -> list[str]:
     terms: list[str] = []
     seen: set[str] = set()
     for item in items:
-        pieces: list[str]
         if isinstance(item, dict):
-            canon = str(item.get("term") or "").strip()
-            variants = [
-                str(v).strip()
-                for v in (item.get("variants") or [])
-                if str(v).strip()
-            ]
-            pieces = ([canon] if canon else []) + variants
+            term = str(item.get("term") or "").strip()
         else:
-            pieces = [str(item).strip()]
-        for term in pieces:
-            if not term or term.startswith("#"):
-                continue
-            # Drop legacy keywords intensifiers (term:1.5). keyterm is plain only.
-            if ":" in term:
-                maybe_w = term.rsplit(":", 1)[-1].lstrip("+-")
-                if maybe_w.replace(".", "", 1).isdigit():
-                    continue
-            if term in seen:
-                continue
-            seen.add(term)
-            terms.append(term)
+            term = str(item).strip()
+        if not term or term.startswith("#") or term in seen:
+            continue
+        seen.add(term)
+        terms.append(term)
     return terms
+
+
+def load_keyterms_for_deepgram(path: Path) -> list[str]:
+    """Deepgram ``keyterm`` list: canons only, slashes stripped, ≤80.
+
+    https://developers.deepgram.com/docs/keyterm
+    Variants stay in ``transcript_fix`` / ``terms_zh.json``.
+    """
+    return sanitize_deepgram_keyterms(load_canonical_terms(path))
+
+
+def load_keyterms(path: Path) -> list[str]:
+    """Alias of ``load_keyterms_for_deepgram`` (live + asr handshake)."""
+    return load_keyterms_for_deepgram(path)
 
 
 def listen_connect_kwargs(
@@ -469,7 +503,9 @@ def listen_connect_kwargs(
         "punctuate": True,
     }
     if keyterms:
-        kwargs["keyterm"] = list(keyterms)
+        cleaned = sanitize_deepgram_keyterms(keyterms)
+        if cleaned:
+            kwargs["keyterm"] = cleaned
     return kwargs
 
 
