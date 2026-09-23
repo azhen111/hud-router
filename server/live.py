@@ -46,6 +46,7 @@ from router import (
     RouterConfigError,
     RouterResult,
     answer as answer_turn,
+    assess_hud_quality,
     get_answer_model,
     is_skip_answer,
     route,
@@ -932,6 +933,10 @@ class LiveSession:
                 else:
                     display_src = ans_payload.glasses_text()
                     detail_src = ans_payload.detail
+                    quality = ans_payload.hud_quality or assess_hud_quality(
+                        display_src, text
+                    )
+                    warnings = list(quality.get("warnings") or [])
                     layers.append(
                         make_layer(
                             "answer",
@@ -940,9 +945,33 @@ class LiveSession:
                             answer_ms,
                             hud_discarded=ans_payload.hud_discarded,
                             hud_lines_truncated=ans_payload.hud_lines_truncated,
+                            hud_quality=quality,
                         )
                     )
                     print_layer(self.now_rel(), layers[-1])
+                    if warnings:
+                        # Non-blocking: short lines or a missed 2nd interrogative.
+                        layers.append(
+                            make_layer(
+                                "hud_quality",
+                                True,
+                                "+".join(warnings),
+                                0.0,
+                                avg_line_len=quality.get("avg_line_len"),
+                                omitted=list(quality.get("omitted") or []),
+                                warnings=warnings,
+                            )
+                        )
+                        omitted = ",".join(
+                            str(x) for x in (quality.get("omitted") or [])
+                        )
+                        print(
+                            f"{fmt_session_ts(self.now_rel())}   → warn  "
+                            f"hud_quality  {','.join(warnings)}  "
+                            f"avg_line_len={quality.get('avg_line_len')}  "
+                            f"omitted={omitted}",
+                            flush=True,
+                        )
                     answer_rec = {
                         **ans_payload.to_dict(),
                         "timeout": False,

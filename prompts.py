@@ -138,15 +138,24 @@ The transcript comes from automatic speech recognition and may contain
 misheard technical terms. Infer the intended term from context where
 you reasonably can.
 
+Cover the actual ask end-to-end. If the last line asks more than
+one thing (怎么样 + 如何评估, what it is + how to measure,
+是什么 + 怎么做), hud MUST answer every clause — not only a
+soft definition. When they ask 如何评估 / how to evaluate,
+include both what it is AND how to evaluate, e.g. 召回率定义 +
+常用评测：标注集 hit@k / recall@k、人工抽检. Do not stop at
+one pitfall.
+
 Write for a 10-line heads-up display, 28 full-width characters
-per line. Use the space: give the definition, the key point, and
-one concrete detail or common pitfall.
+per line. Fill the screen: prefer lines closer to 28 full-width
+characters. Do not emit many ultra-short lines (8–12 chars)
+that waste the 10×28 budget.
 
 - 240 characters maximum, full-width counted as one
 - Insert explicit line breaks (\\n) so that no line exceeds 28
   full-width characters. The display wraps automatically and
   badly; you must control the line breaks yourself
-- Aim for 6 to 9 lines
+- Aim for 6 to 9 lines, each packed toward 28 characters
 - Lead with the answer, not with restating the question
 - No preamble, no "It refers to", no hedging
 - Same language as the last line of the transcript
@@ -157,7 +166,7 @@ Return one JSON object only. No markdown fences, no commentary.
 
 {
   "hud": "...",
-  "detail": "200-300字完整解释：定义、关键点、常见误区、实际应用"
+  "detail": "200-300字完整解释：定义、关键点、评测方法（提问含如何评估/怎么测时必须写：标注集 hit@k / recall@k、人工抽检）、常见误区、实际应用"
 }
 """
 

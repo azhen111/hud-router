@@ -14,9 +14,11 @@ from router import (
     HUD_MAX_LINES,
     MAX_ANSWER_CHARS,
     answer,
+    assess_hud_quality,
     build_client,
     complete_chat,
     get_answer_model,
+    interrogative_clauses,
     is_skip_answer,
     normalize_result,
     parse_answer_output,
@@ -257,11 +259,20 @@ class TestPromptAppend(unittest.TestCase):
         )
         self.assertTrue(ANSWER_SYSTEM_PROMPT.startswith(expected))
         self.assertIn("240 characters maximum", ANSWER_SYSTEM_PROMPT)
+        self.assertIn("Cover the actual ask end-to-end", ANSWER_SYSTEM_PROMPT)
+        self.assertIn("Fill the screen", ANSWER_SYSTEM_PROMPT)
+        self.assertIn("如何评估", ANSWER_SYSTEM_PROMPT)
+        self.assertIn("hit@k", ANSWER_SYSTEM_PROMPT)
+        self.assertIn("recall@k", ANSWER_SYSTEM_PROMPT)
         self.assertIn('"hud": "..."', ANSWER_SYSTEM_PROMPT)
         self.assertIn('"detail":', ANSWER_SYSTEM_PROMPT)
         self.assertNotIn("When in doubt, prefer to respond.", ROUTER_SYSTEM_PROMPT)
         self.assertEqual(PERMISSIVE_JUDGE_APPEND, "When in doubt, prefer to respond.")
         self.assertIn("Never answer with a question. If you would have to ask the speaker", ROUTER_SYSTEM_PROMPT)
+        self.assertNotIn(
+            "give the definition, the key point, and\none concrete detail or common pitfall",
+            ANSWER_SYSTEM_PROMPT,
+        )
 
 
 class TestSelfCallsRoute(unittest.TestCase):
@@ -432,6 +443,68 @@ class TestAnswerTier(unittest.TestCase):
             finally:
                 if old is not None:
                     __import__("os").environ[os_env_pop] = old
+
+    def test_hud_quality_session_short_lines_omit_eval(self) -> None:
+        q = "RAG的召回率怎么样如何评估"
+        clauses = interrogative_clauses(q)
+        self.assertGreaterEqual(len(clauses), 2)
+        self.assertEqual(clauses[0][0], "怎么样")
+        self.assertEqual(clauses[1][0], "如何")
+        # Real-session shape: soft definition + pitfall, ~9 ultra-short lines.
+        short = "\n".join(
+            [
+                "召回率是检索",
+                "出相关文档",
+                "的比例",
+                "常见误区",
+                "是把它和",
+                "精确率搞混",
+                "不等于",
+                "当前准确",
+                "率高低",
+            ]
+        )
+        bad = assess_hud_quality(short, q)
+        self.assertIn("short_lines", bad["warnings"])
+        self.assertIn("omitted_clause", bad["warnings"])
+        self.assertLess(bad["avg_line_len"], 16)
+        self.assertTrue(any("评估" in str(x) or "评测" in str(x) for x in bad["omitted"]))
+
+        packed = (
+            "召回率：检出相关文档占全部相关的比例\n"
+            "常用评测：标注集 hit@k / recall@k\n"
+            "再加人工抽检，看漏检与误检\n"
+            "高召回常牺牲精确率，勿只看单一值"
+        )
+        good = assess_hud_quality(packed, q)
+        self.assertNotIn("omitted_clause", good["warnings"])
+        self.assertNotIn("short_lines", good["warnings"])
+        self.assertGreaterEqual(good["avg_line_len"], 16)
+
+        en_q = "What is RAG recall how do you evaluate it"
+        en_bad = assess_hud_quality("RAG recall is retrieved relevant docs", en_q)
+        self.assertIn("omitted_clause", en_bad["warnings"])
+        en_ok = assess_hud_quality(
+            "RAG recall is retrieved relevant / all relevant. Measure with labeled hit@k.",
+            en_q,
+        )
+        self.assertNotIn("omitted_clause", en_ok["warnings"])
+
+    def test_hud_quality_single_clause_no_omit_warn(self) -> None:
+        hud = "JWT：JSON Web Token，用于无状态鉴权"
+        q = "JWT 是什么"
+        stats = assess_hud_quality(hud, q)
+        self.assertEqual(stats["warnings"], [])
+        self.assertEqual(interrogative_clauses(q)[0][0], "什么")
+
+    def test_parse_answer_attaches_quality_from_question(self) -> None:
+        hud = "\n".join(["召回率是", "检索相关", "文档比例", "常见误区", "混淆精确率"])
+        parsed = parse_answer_output(
+            json.dumps({"hud": hud, "detail": "略"}, ensure_ascii=False),
+            question="RAG的召回率怎么样如何评估",
+        )
+        self.assertIn("omitted_clause", parsed.hud_quality.get("warnings", []))
+        self.assertIn("hud_quality", parsed.to_dict())
 
     def test_complete_chat_plain_text_skips_json_mode(self) -> None:
         text, _timing = complete_chat(

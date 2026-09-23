@@ -7,7 +7,7 @@ import os
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Final, Literal, TypedDict, cast
 
@@ -26,6 +26,9 @@ MAX_TURNS: Final[int] = 6
 MAX_ANSWER_CHARS: Final[int] = 240  # one-screen HUD; full-width = 1
 HUD_LINE_CHARS: Final[int] = 28
 HUD_MAX_LINES: Final[int] = 10
+# Non-blocking quality warn: many ultra-short lines waste the 10×28 screen.
+HUD_SHORT_LINE_AVG: Final[float] = 16.0
+HUD_SHORT_LINE_MIN_LINES: Final[int] = 4
 ALLOWED_KINDS: Final[frozenset[str]] = frozenset(
     {"answer", "term", "number", "translation", "none"}
 )
@@ -577,6 +580,7 @@ class AnswerPayload:
     hud_lines_truncated: int = 0
     hud_discarded: bool = False
     skipped: bool = False
+    hud_quality: dict[str, Any] = field(default_factory=dict)
 
     def glasses_text(self) -> str:
         return self.hud.strip()
@@ -588,7 +592,7 @@ class AnswerPayload:
         return not self.glasses_text() and not self.has_detail()
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        rec: dict[str, Any] = {
             "hud": self.hud,
             "detail": self.detail,
             "parse_ok": self.parse_ok,
@@ -597,6 +601,9 @@ class AnswerPayload:
             "hud_discarded": self.hud_discarded,
             "skipped": self.skipped,
         }
+        if self.hud_quality:
+            rec["hud_quality"] = dict(self.hud_quality)
+        return rec
 
 
 def wrap_hud_line(line: str, width: int = HUD_LINE_CHARS) -> list[str]:
@@ -616,6 +623,8 @@ def postprocess_hud(raw: str) -> tuple[str, dict[str, Any]]:
         "wrapped": False,
         "lines_truncated": 0,
         "discarded": False,
+        "n_lines": 0,
+        "avg_line_len": 0.0,
     }
     text = raw.replace("\r\n", "\n").replace("\r", "\n")
     if is_skip_answer(text) or not text.strip():
@@ -633,6 +642,12 @@ def postprocess_hud(raw: str) -> tuple[str, dict[str, Any]]:
     if len(lines) > HUD_MAX_LINES:
         stats["lines_truncated"] = len(lines) - HUD_MAX_LINES
         lines = lines[:HUD_MAX_LINES]
+    nonempty = [ln for ln in lines if ln.strip()]
+    stats["n_lines"] = len(nonempty)
+    if nonempty:
+        stats["avg_line_len"] = round(
+            sum(answer_char_len(ln) for ln in nonempty) / len(nonempty), 1
+        )
     result = "\n".join(lines)
     if answer_char_len(result.replace("\n", "")) > MAX_ANSWER_CHARS:
         stats["discarded"] = True
@@ -640,7 +655,192 @@ def postprocess_hud(raw: str) -> tuple[str, dict[str, Any]]:
     return result, stats
 
 
-def parse_answer_output(text: str | None) -> AnswerPayload:
+# Longer Chinese markers first so 怎么样 wins over 怎么 / 怎样.
+_ZH_INTERROG: Final[tuple[str, ...]] = (
+    "怎么样",
+    "怎样",
+    "如何",
+    "为什么",
+    "为何",
+    "怎么",
+    "什么",
+    "多少",
+    "哪些",
+    "哪个",
+    "哪儿",
+    "哪里",
+)
+_EN_INTERROG: Final[tuple[str, ...]] = ("how", "what", "why", "which")
+_EN_STOP: Final[frozenset[str]] = frozenset(
+    {
+        "the",
+        "and",
+        "for",
+        "you",
+        "do",
+        "does",
+        "did",
+        "is",
+        "are",
+        "was",
+        "to",
+        "of",
+        "a",
+        "an",
+        "it",
+        "in",
+        "on",
+        "with",
+    }
+)
+# If the omitted clause is about evaluation, accept any of these in hud.
+_EVAL_SYNONYMS: Final[frozenset[str]] = frozenset(
+    {
+        "评估",
+        "评测",
+        "测评",
+        "衡量",
+        "抽检",
+        "标注集",
+        "hit@k",
+        "recall@k",
+        "evaluate",
+        "evaluation",
+        "metric",
+        "metrics",
+    }
+)
+
+
+def _find_interrogative_spans(question: str) -> list[tuple[int, str]]:
+    """Left-to-right (index, marker) hits; Chinese longest-first, English words."""
+    found: list[tuple[int, str]] = []
+    i = 0
+    n = len(question)
+    lower = question.casefold()
+    while i < n:
+        hit: str | None = None
+        for marker in _ZH_INTERROG:
+            if question.startswith(marker, i):
+                hit = marker
+                break
+        if hit is None:
+            for marker in _EN_INTERROG:
+                end = i + len(marker)
+                if lower.startswith(marker, i):
+                    left_ok = i == 0 or not lower[i - 1].isalpha()
+                    right_ok = end >= n or not lower[end].isalpha()
+                    if left_ok and right_ok:
+                        hit = marker
+                        break
+        if hit is not None:
+            found.append((i, hit))
+            i += len(hit)
+        else:
+            i += 1
+    return found
+
+
+def interrogative_clauses(question: str) -> list[tuple[str, str]]:
+    """Split a question into (marker, clause) pairs in order."""
+    text = " ".join(str(question or "").split())
+    spans = _find_interrogative_spans(text)
+    if not spans:
+        return []
+    out: list[tuple[str, str]] = []
+    for idx, (start, marker) in enumerate(spans):
+        end = spans[idx + 1][0] if idx + 1 < len(spans) else len(text)
+        out.append((marker, text[start:end].strip()))
+    return out
+
+
+def _clause_needles(marker: str, clause: str) -> list[str]:
+    """Content words after the interrogative itself (评估 from 如何评估)."""
+    rest = clause
+    if rest.casefold().startswith(marker.casefold()):
+        rest = rest[len(marker) :]
+    rest = rest.strip(" ，。？?！!、；;：:and")
+    needles: list[str] = []
+    cjk = "".join(ch for ch in rest if "\u4e00" <= ch <= "\u9fff")
+    if len(cjk) >= 2:
+        needles.append(cjk)
+        if len(cjk) > 2:
+            needles.append(cjk[:2])
+    for token in rest.replace("/", " ").replace("@", " ").split():
+        folded = token.casefold().strip(".,;:!?()[]")
+        if len(folded) >= 4 and folded not in _EN_STOP and folded not in {
+            m.casefold() for m in _EN_INTERROG
+        }:
+            needles.append(folded)
+    # unique, first occurrence wins
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for item in needles:
+        key = item.casefold()
+        if key not in seen:
+            seen.add(key)
+            uniq.append(item)
+    return uniq
+
+
+def _needle_covered(needle: str, hud_fold: str) -> bool:
+    folded = needle.casefold()
+    if folded in hud_fold:
+        return True
+    if folded in {s.casefold() for s in _EVAL_SYNONYMS}:
+        return any(syn.casefold() in hud_fold for syn in _EVAL_SYNONYMS)
+    return False
+
+
+def omitted_interrogative_needles(question: str, hud: str) -> list[str]:
+    """Needles from the 2nd+ interrogative clause that hud does not cover."""
+    clauses = interrogative_clauses(question)
+    if len(clauses) < 2 or not hud.strip():
+        return []
+    hud_fold = hud.casefold()
+    missing: list[str] = []
+    for marker, clause in clauses[1:]:
+        needles = _clause_needles(marker, clause)
+        if not needles:
+            continue
+        if not any(_needle_covered(n, hud_fold) for n in needles):
+            missing.append(needles[0])
+    return missing
+
+
+def assess_hud_quality(hud: str, question: str = "") -> dict[str, Any]:
+    """Non-blocking quality flags: short lines / omitted 2nd interrogative.
+
+    Never discards hud. Used only for layer-stats warnings.
+    """
+    lines = [
+        ln
+        for ln in str(hud or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        if ln.strip()
+    ]
+    n_lines = len(lines)
+    avg = (
+        sum(answer_char_len(ln) for ln in lines) / n_lines if n_lines else 0.0
+    )
+    short_lines = n_lines >= HUD_SHORT_LINE_MIN_LINES and avg < HUD_SHORT_LINE_AVG
+    omitted = omitted_interrogative_needles(question, hud) if hud.strip() else []
+    warnings: list[str] = []
+    if short_lines:
+        warnings.append("short_lines")
+    if omitted:
+        warnings.append("omitted_clause")
+    return {
+        "n_lines": n_lines,
+        "avg_line_len": round(avg, 1),
+        "short_lines": short_lines,
+        "omitted": omitted,
+        "warnings": warnings,
+    }
+
+
+def parse_answer_output(
+    text: str | None, *, question: str = ""
+) -> AnswerPayload:
     """Parse answer-tier JSON. Empty hud + empty detail = no trigger."""
     raw = "" if text is None else str(text)
     if is_skip_answer(raw):
@@ -656,6 +856,7 @@ def parse_answer_output(text: str | None) -> AnswerPayload:
         hud_raw = ""
     hud, stats = postprocess_hud(hud_raw)
     skipped = not hud.strip() and not detail
+    quality = assess_hud_quality(hud, question) if hud.strip() else {}
     return AnswerPayload(
         hud=hud,
         detail=detail,
@@ -665,6 +866,7 @@ def parse_answer_output(text: str | None) -> AnswerPayload:
         hud_lines_truncated=int(stats["lines_truncated"]),
         hud_discarded=bool(stats["discarded"]),
         skipped=skipped,
+        hud_quality=quality,
     )
 
 
@@ -687,18 +889,24 @@ def answer(
     user_message: str = assemble_answer_user_message(
         turns, locale, kind, wearer_note
     )
+    last_text: str = str(turns[-1].get("text") or "") if turns else ""
     messages: list[dict[str, str]] = [
         {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
         {"role": "user", "content": user_message},
     ]
     if completion_fn is not None:
-        return parse_answer_output(str(completion_fn(messages) or "")), None
+        return (
+            parse_answer_output(
+                str(completion_fn(messages) or ""), question=last_text
+            ),
+            None,
+        )
     active: OpenAI = client if client is not None else build_client()
     model: str = get_answer_model()
     raw_text, timing = complete_chat(
         active, messages, model, json_mode=True, max_tokens=1024
     )
-    return parse_answer_output(raw_text), timing
+    return parse_answer_output(raw_text, question=last_text), timing
 
 
 def result_json(result: RouterResult) -> str:
@@ -710,6 +918,8 @@ __all__ = [
     "ALLOWED_KINDS",
     "HUD_LINE_CHARS",
     "HUD_MAX_LINES",
+    "HUD_SHORT_LINE_AVG",
+    "HUD_SHORT_LINE_MIN_LINES",
     "MAX_ANSWER_CHARS",
     "MAX_TURNS",
     "PERMISSIVE_JUDGE_APPEND",
@@ -723,15 +933,18 @@ __all__ = [
     "Turn",
     "answer_char_len",
     "answer",
+    "assess_hud_quality",
     "build_client",
     "complete_chat",
     "degrade",
     "extract_json_object",
     "get_answer_model",
     "get_settings",
+    "interrogative_clauses",
     "is_skip_answer",
     "load_dotenv",
     "normalize_result",
+    "omitted_interrogative_needles",
     "parse_answer_output",
     "parse_model_output",
     "postprocess_hud",

@@ -16,6 +16,7 @@ from server.live import (
     DEFAULT_TERMS_PATH,
     apply_trigger_policy,
     build_settings,
+    make_layer,
     pick_display_answer,
     display_speaker,
     format_router_timeout_skip,
@@ -435,6 +436,21 @@ class TwoTierWiring(unittest.TestCase):
         with redirect_stdout(buf):
             log_startup(settings)
         self.assertIn("permissive=on", buf.getvalue())
+
+    def test_hud_quality_layer_does_not_block(self) -> None:
+        rec = make_layer(
+            "hud_quality",
+            True,
+            "short_lines+omitted_clause",
+            0.0,
+            avg_line_len=10.2,
+            omitted=["评估"],
+            warnings=["short_lines", "omitted_clause"],
+        )
+        self.assertTrue(rec["allowed"])
+        self.assertEqual(rec["name"], "hud_quality")
+        self.assertIn("omitted_clause", rec["reason"])
+        self.assertEqual(rec["omitted"], ["评估"])
 
     def test_two_tier_skip_and_timeout(self) -> None:
         text, skip = pick_display_answer(

@@ -68,7 +68,7 @@ Copy `.env.example` to `.env` or export the same variables. Nothing is hardcoded
 
 - `kind`: `answer` | `term` | `number` | `translation` | `none`
 - `answer` is empty when `should_respond` is false
-- Live answer-tier `hud` is at most 240 characters (28 per line, 10 lines). Judge `ROUTER_SYSTEM_PROMPT` still says 56; over-length on the judge path uses `MAX_ANSWER_CHARS=240` (`truncated_to_none`). `evaluate.py` reports this as observational `suppressed_over_length`, not an acceptance gate
+- Live answer-tier `hud` is at most 240 characters (28 per line, 10 lines) and must cover the actual ask end-to-end (e.g. 怎么样 + 如何评估 → definition and hit@k / recall@k / 抽检). Ultra-short lines or a missed second interrogative log a `hud_quality` warning and do not block. Judge `ROUTER_SYSTEM_PROMPT` still says 56; over-length on the judge path uses `MAX_ANSWER_CHARS=240` (`truncated_to_none`). `evaluate.py` reports this as observational `suppressed_over_length`, not an acceptance gate
 - `needs_more_context: true` forces `should_respond: false`
 
 ## Run the CLI

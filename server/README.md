@@ -4,7 +4,7 @@
 
 `server/live.py`：眼镜 PCM 上行 → Deepgram nova-3（`keyterm`）→ aggregator → **`transcript_fix`（默认开，只改表内 variants）** → **judge** → **answer**（JSON `hud`+`detail`）→ 默认 **policy 关** → 下行 `{"text": hud, "detail": ..., "question": ...}`。空 hud 只上手机列表，不上镜。`--policy` 才走策略（`max_chars=240`，`ttl=25000`）。
 
-**两级默认开。** 未配置 `ANSWER_MODEL` 时两级用同一个 `ROUTER_MODEL`。Judge 的 `answer` **不上镜**。`--single-shot` / `LIVE_TWO_TIER=0` 恢复单次 judge。`--permissive` 只在运行时给 judge 追加 `When in doubt, prefer to respond.`（不改 `ROUTER_SYSTEM_PROMPT` 源文）。每层 `layers[]`（pass/block/reason/ms）打终端和 jsonl。
+**两级默认开。** 未配置 `ANSWER_MODEL` 时两级用同一个 `ROUTER_MODEL`。Judge 的 `answer` **不上镜**。`--single-shot` / `LIVE_TWO_TIER=0` 恢复单次 judge。`--permissive` 只在运行时给 judge 追加 `When in doubt, prefer to respond.`（不改 `ROUTER_SYSTEM_PROMPT` 源文）。每层 `layers[]`（pass/block/reason/ms）打终端和 jsonl。Answer 的 `hud` 必须答完提问（「怎么样」+「如何评估」要同时写定义和评测，例如标注集 hit@k / recall@k、人工抽检），并尽量填满每行 28 全角，避免一串 8–12 字短行浪费 10×28。行均长过短或漏掉第二问句时，`layers` 记 `hud_quality` 警告（**不拦截**）。
 
 **不做：** RAG、LLM 纠错、改 `ROUTER_SYSTEM_PROMPT` / testcases* / display_policy 语义。
 
@@ -77,7 +77,7 @@ npx evenhub-simulator http://localhost:5173
 4. 手机页填 `ws://<电脑LAN>:8766`（灰色占位符不是值），点 **Connect**。
    `app.json` `network.whitelist` 须含该 origin（QR 开发态可能跳过，正式包必须写全，无通配符）。
 5. 状态出现 `deepgram_ready` 后开麦。镜腿单击 = 暂停/恢复采集；双击 = `shutDownPageContainer(1)` 退出。
-6. 对面**或佩戴者**问技术问题都会进 `route()`。默认 **policy 关**：answer 的 `hud`（≤240，28 字折行、最多 10 行）上镜，`detail` 进手机滚动列表。空 hud + 有 detail = 只上手机。`--policy` 才套预算/置信/去重/TTL（25s）。策略算法未改；`--policy` 时 `format_length` 仍按旧规则在 28 处折一次。
+6. 对面**或佩戴者**问技术问题都会进 `route()`。默认 **policy 关**：answer 的 `hud`（≤240，28 字折行、最多 10 行）上镜，`detail` 进手机滚动列表。提问含「如何评估 / 怎么测」时 `detail` 须写评测方法。空 hud + 有 detail = 只上手机。`--policy` 才套预算/置信/去重/TTL（25s）。策略算法未改；`--policy` 时 `format_length` 仍按旧规则在 28 处折一次。
 
 物理验收（戴上 G2、看见字）由使用者完成。本环境不编造硬件结果。A/B 清单：`server/ASR_EVAL.md`。朗读稿：`server/fixtures/it_questions_20.txt`。
 
@@ -138,7 +138,7 @@ python server/live.py --lang multi --log live_multi.jsonl
 
 - `kind=final`：Deepgram 一条 is_final（含 `speech_final`）。
 - `kind=fix`：一条确定性纠正（`original` / `fixed` / `term` / `similarity`）。
-- `kind=turn`：`aggregated_text`、`fix`、`router`、`answer`（`hud`/`detail`）、`layers`（每层 `name/allowed/reason/ms`）、`timings.judge_ms` / `answer_ms`、`skip_reason`、`policy`。下行 `{"text": hud, "detail": ..., "question": ...}`。
+- `kind=turn`：`aggregated_text`、`fix`、`router`、`answer`（`hud`/`detail`/`hud_quality`）、`layers`（每层 `name/allowed/reason/ms`；answer 带 `hud_quality`；短行或漏第二问句时另有 `name=hud_quality` 警告层，`allowed=true` 不拦截）、`timings.judge_ms` / `answer_ms`、`skip_reason`、`policy`。下行 `{"text": hud, "detail": ..., "question": ...}`。
 - `kind=policy_clear`：TTL 到期推 `・`，不依赖下一条候选。
 
 `policy`（router 触发后，或 `--no-policy` 本会走到策略时）字段：
