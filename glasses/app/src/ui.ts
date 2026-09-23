@@ -13,6 +13,7 @@ let captureEl: HTMLDivElement
 let pcmEl: HTMLDivElement
 let roleEl: HTMLDivElement
 let dirEl: HTMLDivElement
+let listEl: HTMLDivElement
 
 export function mountUi() {
   const app = document.querySelector<HTMLDivElement>('#app')!
@@ -38,6 +39,10 @@ export function mountUi() {
         <div class="k">最近一条</div><div id="latestMsg" class="mono">（无）</div>
         <div class="k">镜片</div><div id="latestText" class="mono">（无）</div>
       </section>
+      <section class="listbox">
+        <h2>手机详解（会话后可回看）</h2>
+        <div id="detailList" class="detaillist">（还没有详解）</div>
+      </section>
       <section class="errbox">
         <h2>最近错误（全文）</h2>
         <div id="errorText" class="mono">（无）</div>
@@ -58,7 +63,72 @@ export function mountUi() {
   pcmEl = app.querySelector('#pcmCount')!
   roleEl = app.querySelector('#lastRole')!
   dirEl = app.querySelector('#lastDirection')!
+  listEl = app.querySelector('#detailList')!
+  renderDetailList(loadDetailItems())
   injectStyles()
+}
+
+export type DetailItem = {
+  ts: string
+  question: string
+  detail: string
+}
+
+const LS_DETAILS = 'hud-router-detail-list'
+const DETAIL_CAP = 50
+
+export function loadDetailItems(): DetailItem[] {
+  try {
+    const raw = localStorage.getItem(LS_DETAILS) || '[]'
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (x): x is DetailItem =>
+        !!x && typeof x.ts === 'string' && typeof x.detail === 'string',
+    )
+  } catch {
+    return []
+  }
+}
+
+export function appendDetail(question: string, detail: string, ts?: string): DetailItem[] {
+  const item: DetailItem = {
+    ts: ts || new Date().toISOString(),
+    question: question || '',
+    detail,
+  }
+  const next = [item, ...loadDetailItems()].slice(0, DETAIL_CAP)
+  try {
+    localStorage.setItem(LS_DETAILS, JSON.stringify(next))
+  } catch {
+    /* ignore quota */
+  }
+  renderDetailList(next)
+  return next
+}
+
+export function renderDetailList(items: DetailItem[]): void {
+  if (!listEl) return
+  if (!items.length) {
+    listEl.textContent = '（还没有详解）'
+    return
+  }
+  listEl.innerHTML = items
+    .map(it => {
+      const q = escapeHtml(it.question || '（无原问）')
+      const d = escapeHtml(it.detail)
+      const t = escapeHtml(it.ts.replace('T', ' ').replace('Z', ''))
+      return `<article class="ditem"><time>${t}</time><div class="q">${q}</div><div class="d">${d}</div></article>`
+    })
+    .join('')
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
 }
 
 export function wsUrlInput(): HTMLInputElement {
@@ -155,8 +225,14 @@ function injectStyles() {
       background: #2E2E2E; border: 1px solid #3E3E3E; border-radius: 12px; padding: 16px; }
     .k { color: #7B7B7B; }
     .mono { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
-    .errbox { background: #2E2E2E; border: 1px solid #3E3E3E; border-radius: 12px; padding: 16px; }
-    .errbox h2 { font-size: 12px; color: #7B7B7B; margin: 0 0 8px; }
+    .errbox, .listbox { background: #2E2E2E; border: 1px solid #3E3E3E; border-radius: 12px; padding: 16px; }
+    .errbox h2, .listbox h2 { font-size: 12px; color: #7B7B7B; margin: 0 0 8px; }
+    .detaillist { max-height: 42vh; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
+    .ditem { border-top: 1px solid #3E3E3E; padding-top: 8px; }
+    .ditem:first-child { border-top: 0; padding-top: 0; }
+    .ditem time { font-size: 11px; color: #7B7B7B; }
+    .ditem .q { font-size: 13px; color: #A7A7A7; margin: 2px 0 4px; white-space: pre-wrap; }
+    .ditem .d { font-size: 14px; white-space: pre-wrap; word-break: break-word; }
     #errorText { color: #FF453A; min-height: 3em; }
     footer { font-size: 12px; color: #7B7B7B; text-align: center; }
   `

@@ -2,9 +2,9 @@
 
 ## Phase 3 — live 通路（ASR 加固）
 
-`server/live.py`：眼镜 PCM 上行 → Deepgram nova-3（`keyterm`）→ aggregator → **`transcript_fix`（默认开）** → **judge**（`ROUTER_SYSTEM_PROMPT`，只取 should_respond / conf / kind / reason / needs_more_context）→ **answer**（`ANSWER_SYSTEM_PROMPT`，仅 trigger）→ **`display_policy`** → `{"text": ...}`。TTL 到期再推 `・`。
+`server/live.py`：眼镜 PCM 上行 → Deepgram nova-3（`keyterm`）→ aggregator → **`transcript_fix`（默认开，只改表内 variants）** → **judge** → **answer**（JSON `hud`+`detail`）→ 默认 **policy 关** → 下行 `{"text": hud, "detail": ..., "question": ...}`。空 hud 只上手机列表，不上镜。`--policy` 才走策略（`max_chars=240`，`ttl=25000`）。
 
-**两级默认开。** 未配置 `ANSWER_MODEL` 时两级用同一个 `ROUTER_MODEL`（通常 gpt-4o-mini）。Judge 的 `answer` **不上镜**。`--single-shot` / `LIVE_TWO_TIER=0` 恢复单次 judge（用 judge.answer，方便 A/B）。
+**两级默认开。** 未配置 `ANSWER_MODEL` 时两级用同一个 `ROUTER_MODEL`。Judge 的 `answer` **不上镜**。`--single-shot` / `LIVE_TWO_TIER=0` 恢复单次 judge。`--permissive` 只在运行时给 judge 追加 `When in doubt, prefer to respond.`（不改 `ROUTER_SYSTEM_PROMPT` 源文）。每层 `layers[]`（pass/block/reason/ms）打终端和 jsonl。
 
 **不做：** RAG、LLM 纠错、改 `ROUTER_SYSTEM_PROMPT` / testcases* / display_policy 语义。
 
@@ -40,7 +40,9 @@ export ANSWER_MODEL=          # 空 = 与 ROUTER_MODEL 相同
 export ANSWER_TIMEOUT_MS=4000
 export LIVE_TWO_TIER=1        # 0 或 --single-shot = 单次 judge
 export LIVE_NO_FIX=0
-export FIX_SIMILARITY=0.6
+export FIX_SIMILARITY=0.85
+export LIVE_POLICY=0
+export LIVE_PERMISSIVE=0
 export LIVE_WEARER_NOTE='佩戴者是软件工程师，当前对话为 IT 技术讨论'
 ```
 
@@ -50,13 +52,13 @@ export LIVE_WEARER_NOTE='佩戴者是软件工程师，当前对话为 IT 技术
 python server/live.py
 python server/live.py --host 0.0.0.0 --port 8766 --lang zh
 python server/live.py --lang multi --log live_multi.jsonl
-python server/live.py --no-policy --log live_nopolicy.jsonl
+python server/live.py --policy --log live_policy.jsonl
+python server/live.py --permissive --log live_perm.jsonl
 python server/live.py --no-fix --log live_nofix.jsonl
 python server/live.py --single-shot --log live_singleshot.jsonl
-python server/live.py --no-answer-tier --log live_singleshot.jsonl
 ```
 
-启动横幅必须能看到 `router_timeout_ms=3000`（以及 `source=default|cli|env`）和 `policy=on` / `policy=off`。若 `.env` 里还留着 `LIVE_ROUTER_TIMEOUT_MS=1800`，横幅会打印 `source=env LIVE_ROUTER_TIMEOUT_MS=1800`——那不是代码默认，是环境覆盖。
+启动横幅必须能看到 `router_timeout_ms=3000`、`policy=off`（除非 `--policy`）、`keyterms_dg=`、`permissive=off`。若 `.env` 里还留着 `LIVE_ROUTER_TIMEOUT_MS=1800`，横幅会打印 `source=env`——那不是代码默认。
 
 重启（改默认 / 词表 / 策略后必须）：Ctrl-C 停掉旧 `python server/live.py`，再跑同一条命令。改 `terms_zh.json` 后必须重启才会进 Deepgram 握手。眼镜插件若已 Connect，断线再连一次。
 
@@ -75,7 +77,7 @@ npx evenhub-simulator http://localhost:5173
 4. 手机页填 `ws://<电脑LAN>:8766`（灰色占位符不是值），点 **Connect**。
    `app.json` `network.whitelist` 须含该 origin（QR 开发态可能跳过，正式包必须写全，无通配符）。
 5. 状态出现 `deepgram_ready` 后开麦。镜腿单击 = 暂停/恢复采集；双击 = `shutDownPageContainer(1)` 退出。
-6. 对面**或佩戴者**问技术问题都会进 `route()`。`should_respond=true` 后先走 `display_policy`（预算 / 置信 / 去重 / 长度 / TTL），通过才 `{"text": display_text}` 上镜。约 10s 后独立定时器再推 `・` 清屏（无 hide API，见 `glasses/SDK_NOTES.md`）。`--no-policy` 时 TRIGGER 直接推 **answer 级**正文（`--single-shot` 则推 judge.answer），和 M1 一样不经策略。
+6. 对面**或佩戴者**问技术问题都会进 `route()`。默认 **policy 关**：answer 的 `hud`（≤240，28 字折行、最多 10 行）上镜，`detail` 进手机滚动列表。空 hud + 有 detail = 只上手机。`--policy` 才套预算/置信/去重/TTL（25s）。策略算法未改；`--policy` 时 `format_length` 仍按旧规则在 28 处折一次。
 
 物理验收（戴上 G2、看见字）由使用者完成。本环境不编造硬件结果。A/B 清单：`server/ASR_EVAL.md`。朗读稿：`server/fixtures/it_questions_20.txt`。
 
@@ -136,7 +138,7 @@ python server/live.py --lang multi --log live_multi.jsonl
 
 - `kind=final`：Deepgram 一条 is_final（含 `speech_final`）。
 - `kind=fix`：一条确定性纠正（`original` / `fixed` / `term` / `similarity`）。
-- `kind=turn`：`aggregated_text`、`fix`、`router`（judge JSON，其中 `answer` 仅供对照）、`answer`（明文或 SKIP）、`timings.judge_ms` / `answer_ms`、`skip_reason`、`policy`。
+- `kind=turn`：`aggregated_text`、`fix`、`router`、`answer`（`hud`/`detail`）、`layers`（每层 `name/allowed/reason/ms`）、`timings.judge_ms` / `answer_ms`、`skip_reason`、`policy`。下行 `{"text": hud, "detail": ..., "question": ...}`。
 - `kind=policy_clear`：TTL 到期推 `・`，不依赖下一条候选。
 
 `policy`（router 触发后，或 `--no-policy` 本会走到策略时）字段：
@@ -174,16 +176,17 @@ python server/live.py --lang multi --log live_multi.jsonl
 | two-tier | **开** | `--single-shot` / `--no-answer-tier` / `LIVE_TWO_TIER=0` | 关则只用 judge.answer（A/B） |
 | ANSWER_MODEL | =ROUTER_MODEL | `ANSWER_MODEL` | 未设则与 judge 同模型 |
 | answer timeout | 4000 ms | `--answer-timeout-ms` / `ANSWER_TIMEOUT_MS` | 仅 trigger 后调用；超时丢轮、不重试 |
-| transcript fix | **开** | `--no-fix` / `LIVE_NO_FIX` | 聚合后、judge 前确定性纠错 |
-| FIX_SIMILARITY | 0.6 | `--fix-similarity` / `FIX_SIMILARITY` | 模糊匹配阈值 |
-| display policy | **开** | `--no-policy` / `LIVE_NO_POLICY` | 关掉则 TRIGGER 直推，不经策略 |
+| transcript fix | **开** | `--no-fix` / `LIVE_NO_FIX` | 只替换表内 variants；无模糊 |
+| FIX_SIMILARITY | 0.85 | `--fix-similarity` / `FIX_SIMILARITY` | 保留旋钮，匹配已不再用它 |
+| permissive | 关 | `--permissive` / `LIVE_PERMISSIVE` | 运行时追加 judge 一句，不改源 prompt |
+| display policy | **关** | `--policy` / `LIVE_POLICY=1` | 打开才走策略；默认直推 hud |
 | POLICY_CONF_FULL | 0.85 | `--conf-full` / `POLICY_CONF_FULL` | ≥ 此值整段 |
 | POLICY_CONF_HINT | 0.70 | `--conf-hint` / `POLICY_CONF_HINT` | HINT≤c<FULL 只显示 `・?` |
 | POLICY_BUDGET_WINDOW_MS | 60000 | `--budget-window-ms` | 先推后压；窗内额满可抢一次 |
 | POLICY_BUDGET_MAX | 1 | `--budget-max` | 窗内占额次数 |
-| POLICY_TTL_MS | 10000 | `--ttl-ms` | 独立 `loop.call_later`，到期推 `・` |
+| POLICY_TTL_MS | 25000 | `--ttl-ms` | 独立 `loop.call_later`，到期推 `・` |
 | POLICY_DEDUP_WINDOW | 10 | `--dedup-window` | 最近已推条数 |
-| POLICY_MAX_CHARS | 56 | `--max-chars` | 超过则 `over_max_two_lines` |
+| POLICY_MAX_CHARS | 240 | `--max-chars` | 超过则 `over_max_two_lines` |
 | log | `live_<时间>.jsonl` | `--log` | 会话日志路径 |
 | WS URL（插件） | `ws://<页面hostname>:8766` | 手机输入框 / localStorage | 一条连接既上行 PCM 也下行文本 |
 

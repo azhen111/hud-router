@@ -143,7 +143,7 @@ class Dedup(unittest.TestCase):
 class Ttl(unittest.TestCase):
     def test_ttl_clears_without_new_candidate(self) -> None:
         clock = FakeClock()
-        p, expired = make_policy(clock)
+        p, expired = make_policy(clock, ttl_ms=10_000)
         p.consider(Candidate("十条字以内的答案", 0.90, ts_ms=0))
         self.assertTrue(p.showing)
         clock.advance(10_000)
@@ -152,7 +152,7 @@ class Ttl(unittest.TestCase):
 
     def test_new_push_resets_ttl(self) -> None:
         clock = FakeClock()
-        p, expired = make_policy(clock)
+        p, expired = make_policy(clock, ttl_ms=10_000)
         p.consider(Candidate("第一条答案够一眼", 0.90, ts_ms=0))
         clock.advance(9_000)
         self.assertEqual(expired, [])
@@ -163,6 +163,10 @@ class Ttl(unittest.TestCase):
         clock.advance(1_000)
         self.assertEqual(expired, ["clear"])
 
+    def test_default_ttl_is_25000(self) -> None:
+        self.assertEqual(PolicySettings().ttl_ms, 25_000)
+        self.assertEqual(PolicySettings().max_chars, 240)
+
 
 class Length(unittest.TestCase):
     def test_one_line_le_28(self) -> None:
@@ -170,7 +174,7 @@ class Length(unittest.TestCase):
         self.assertEqual(tag, "one_line")
         self.assertEqual(text, "测" * 28)
         clock = FakeClock()
-        p, _ = make_policy(clock)
+        p, _ = make_policy(clock, max_chars=56)
         d = p.consider(Candidate("测" * 28, 0.9))
         self.assertEqual(d.action, "push")
         self.assertNotIn("\n", d.display_text)
@@ -180,14 +184,14 @@ class Length(unittest.TestCase):
         self.assertEqual(tag, "two_line")
         self.assertEqual(text, "测" * 28 + "\n" + "测" * 12)
         clock = FakeClock()
-        p, _ = make_policy(clock)
+        p, _ = make_policy(clock, max_chars=56)
         d = p.consider(Candidate("测" * 40, 0.9))
         self.assertEqual(d.action, "push")
         self.assertEqual(d.display_text.count("\n"), 1)
 
     def test_exactly_56_pushed_as_two_lines(self) -> None:
         clock = FakeClock()
-        p, _ = make_policy(clock)
+        p, _ = make_policy(clock, max_chars=56)
         d = p.consider(Candidate("测" * 56, 0.9))
         self.assertEqual(d.action, "push")
         self.assertEqual(d.reason, "two_line")
@@ -195,12 +199,19 @@ class Length(unittest.TestCase):
 
     def test_over_56_drops(self) -> None:
         clock = FakeClock()
-        p, _ = make_policy(clock)
+        p, _ = make_policy(clock, max_chars=56)
         d = p.consider(Candidate("测" * 57, 0.9))
         self.assertEqual(d.action, "drop")
         self.assertEqual(d.reason, "over_max_two_lines")
         self.assertEqual(p.stats.get("drop_length"), 1)
         self.assertEqual(p.used, 0)
+
+    def test_over_240_drops_with_new_default(self) -> None:
+        clock = FakeClock()
+        p, _ = make_policy(clock)
+        d = p.consider(Candidate("测" * 241, 0.9))
+        self.assertEqual(d.action, "drop")
+        self.assertEqual(d.reason, "over_max_two_lines")
 
 
 if __name__ == "__main__":

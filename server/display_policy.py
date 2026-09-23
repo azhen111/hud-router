@@ -25,9 +25,9 @@ DEFAULT_BUDGET_MAX = 1
 DEFAULT_PREEMPT_MARGIN = 0.1
 DEFAULT_DEDUP_WINDOW = 10
 DEFAULT_DEDUP_THRESHOLD = 0.85
-DEFAULT_TTL_MS = 10_000
-DEFAULT_MAX_CHARS = 56  # drop only when answer_char_len > this (two G2 lines)
-DEFAULT_ONE_LINE_CHARS = 28  # wrap hint; 29–56 stay two lines, not dropped
+DEFAULT_TTL_MS = 25_000
+DEFAULT_MAX_CHARS = 240  # drop only when len(text) > this (one G2 screen)
+DEFAULT_ONE_LINE_CHARS = 28  # wrap hint; algorithm unchanged
 DEFAULT_HINT_TEXT = "・?"
 DEFAULT_CLEAR_PLACEHOLDER = "・"
 

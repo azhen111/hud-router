@@ -8,8 +8,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from evaluate import CaseResult, TestCase, render_report
-from prompts import ANSWER_SYSTEM_PROMPT, ROUTER_SYSTEM_PROMPT
+from prompts import ANSWER_SYSTEM_PROMPT, PERMISSIVE_JUDGE_APPEND, ROUTER_SYSTEM_PROMPT
 from router import (
+    HUD_LINE_CHARS,
+    HUD_MAX_LINES,
     MAX_ANSWER_CHARS,
     answer,
     build_client,
@@ -17,6 +19,8 @@ from router import (
     get_answer_model,
     is_skip_answer,
     normalize_result,
+    parse_answer_output,
+    postprocess_hud,
     route,
 )
 
@@ -244,7 +248,7 @@ class TestPromptAppend(unittest.TestCase):
 
     def test_answer_prompt_verbatim_and_router_untouched(self) -> None:
         expected = (
-            "You write one-glance answers for a heads-up display worn during a\n"
+            "You write one-screen answers for a heads-up display worn during a\n"
             "live conversation. The wearer is a software engineer; the conversation\n"
             "is a technical discussion. Resolve technical acronyms and terms in\n"
             "that context — RAG means retrieval-augmented generation, not a\n"
@@ -252,9 +256,11 @@ class TestPromptAppend(unittest.TestCase):
             "software-engineering sense."
         )
         self.assertTrue(ANSWER_SYSTEM_PROMPT.startswith(expected))
-        self.assertIn("output exactly: SKIP", ANSWER_SYSTEM_PROMPT)
-        self.assertIn("Output the answer text only. No JSON, no markdown, no commentary.", ANSWER_SYSTEM_PROMPT)
-        self.assertNotIn("ANSWER_SYSTEM_PROMPT", ROUTER_SYSTEM_PROMPT)
+        self.assertIn("240 characters maximum", ANSWER_SYSTEM_PROMPT)
+        self.assertIn('"hud": "..."', ANSWER_SYSTEM_PROMPT)
+        self.assertIn('"detail":', ANSWER_SYSTEM_PROMPT)
+        self.assertNotIn("When in doubt, prefer to respond.", ROUTER_SYSTEM_PROMPT)
+        self.assertEqual(PERMISSIVE_JUDGE_APPEND, "When in doubt, prefer to respond.")
         self.assertIn("Never answer with a question. If you would have to ask the speaker", ROUTER_SYSTEM_PROMPT)
 
 
@@ -298,9 +304,12 @@ class TestAnswerTier(unittest.TestCase):
             self.assertEqual(messages[0]["content"], ANSWER_SYSTEM_PROMPT)
             self.assertIn("<judge_kind>term</judge_kind>", messages[1]["content"])
             self.assertIn("JWT 是什么", messages[1]["content"])
-            return "JWT：JSON Web Token"
+            return json.dumps(
+                {"hud": "JWT：JSON Web Token", "detail": "JSON Web Token 用于鉴权。"},
+                ensure_ascii=False,
+            )
 
-        text, timing = answer(
+        payload, timing = answer(
             {
                 "recent_turns": [
                     {"speaker": "OTHER", "text": "JWT 是什么", "ts": 1}
@@ -310,9 +319,10 @@ class TestAnswerTier(unittest.TestCase):
             kind="term",
             completion_fn=fake_complete,
         )
-        self.assertEqual(text, "JWT：JSON Web Token")
+        self.assertEqual(payload.hud, "JWT：JSON Web Token")
+        self.assertIn("鉴权", payload.detail)
         self.assertIsNone(timing)
-        self.assertFalse(is_skip_answer(text))
+        self.assertFalse(payload.skipped)
 
     def test_skip_is_exact_trim(self) -> None:
         self.assertTrue(is_skip_answer("SKIP"))
@@ -323,12 +333,59 @@ class TestAnswerTier(unittest.TestCase):
         def fake_complete(_messages: list[dict[str, str]]) -> str:
             return "SKIP"
 
-        text, _ = answer(
+        payload, _ = answer(
             {"recent_turns": [{"speaker": "OTHER", "text": "那是啥", "ts": 1}], "locale": "zh"},
             kind="answer",
             completion_fn=fake_complete,
         )
-        self.assertTrue(is_skip_answer(text))
+        self.assertTrue(payload.skipped)
+        self.assertTrue(payload.no_push())
+
+    def test_hud_postprocess_and_phone_only(self) -> None:
+        self.assertEqual(MAX_ANSWER_CHARS, 240)
+        self.assertEqual(HUD_LINE_CHARS, 28)
+        self.assertEqual(HUD_MAX_LINES, 10)
+        wrapped, stats = postprocess_hud("A" * 40)
+        self.assertTrue(stats["wrapped"])
+        self.assertEqual(wrapped.split("\n")[0], "A" * 28)
+        discarded, stats2 = postprocess_hud("B" * 241)
+        self.assertEqual(discarded, "")
+        self.assertTrue(stats2["discarded"])
+        lines = "\n".join(f"L{i}" for i in range(12))
+        cut, stats3 = postprocess_hud(lines)
+        self.assertEqual(len(cut.split("\n")), 10)
+        self.assertEqual(stats3["lines_truncated"], 2)
+        parsed = parse_answer_output(
+            json.dumps({"hud": "SKIP", "detail": "只给手机的解释" * 4}, ensure_ascii=False)
+        )
+        self.assertEqual(parsed.hud, "")
+        self.assertTrue(parsed.has_detail())
+        self.assertFalse(parsed.no_push())
+
+    def test_permissive_appends_without_editing_prompt(self) -> None:
+        seen: list[list[dict[str, str]]] = []
+
+        def fake_complete(messages: list[dict[str, str]]) -> str:
+            seen.append(messages)
+            return json.dumps(
+                {
+                    "should_respond": False,
+                    "confidence": 0.2,
+                    "kind": "none",
+                    "reason": "unsure",
+                    "answer": "",
+                    "needs_more_context": False,
+                }
+            )
+
+        route(
+            {"recent_turns": [{"speaker": "OTHER", "text": "嗯", "ts": 1}], "locale": "zh"},
+            completion_fn=fake_complete,
+            extra_system=PERMISSIVE_JUDGE_APPEND,
+        )
+        self.assertIn(PERMISSIVE_JUDGE_APPEND, seen[0][0]["content"])
+        self.assertTrue(seen[0][0]["content"].startswith(ROUTER_SYSTEM_PROMPT.rstrip()))
+        self.assertNotIn(PERMISSIVE_JUDGE_APPEND, ROUTER_SYSTEM_PROMPT)
 
     def test_ignore_answer_keeps_overlength_trigger(self) -> None:
         long_answer = "X" * (MAX_ANSWER_CHARS + 8)

@@ -122,9 +122,12 @@ reason: one short clause, in English, stating why. Written for a
 developer reading an error log, not for the wearer.
 """
 
-# Answer-tier prompt (Phase 3 / M3). Do not edit ROUTER_SYSTEM_PROMPT to
-# compensate; judge and answer are separate calls.
-ANSWER_SYSTEM_PROMPT: Final[str] = """You write one-glance answers for a heads-up display worn during a
+# Appended at runtime by --permissive. Do not bake into ROUTER_SYSTEM_PROMPT.
+PERMISSIVE_JUDGE_APPEND: Final[str] = "When in doubt, prefer to respond."
+
+# Answer-tier prompt. Do not edit ROUTER_SYSTEM_PROMPT to compensate.
+# Empty hud + empty detail = no trigger. hud "SKIP" is treated as empty.
+ANSWER_SYSTEM_PROMPT: Final[str] = """You write one-screen answers for a heads-up display worn during a
 live conversation. The wearer is a software engineer; the conversation
 is a technical discussion. Resolve technical acronyms and terms in
 that context — RAG means retrieval-augmented generation, not a
@@ -135,15 +138,27 @@ The transcript comes from automatic speech recognition and may contain
 misheard technical terms. Infer the intended term from context where
 you reasonably can.
 
-Write the answer to be read in a glance, mid-conversation:
-- 56 characters maximum, full-width counted as one
-- The fact first. No preamble, no "It refers to", no hedging
-- Sentence fragments are fine
-- Same language as the last line of the transcript
-- Never answer with a question. If you cannot state something useful
-  in 56 characters, output exactly: SKIP
+Write for a 10-line heads-up display, 28 full-width characters
+per line. Use the space: give the definition, the key point, and
+one concrete detail or common pitfall.
 
-Output the answer text only. No JSON, no markdown, no commentary.
+- 240 characters maximum, full-width counted as one
+- Insert explicit line breaks (\\n) so that no line exceeds 28
+  full-width characters. The display wraps automatically and
+  badly; you must control the line breaks yourself
+- Aim for 6 to 9 lines
+- Lead with the answer, not with restating the question
+- No preamble, no "It refers to", no hedging
+- Same language as the last line of the transcript
+- Never answer with a question. If you cannot say anything useful,
+  set hud to "" and detail to ""
+
+Return one JSON object only. No markdown fences, no commentary.
+
+{
+  "hud": "...",
+  "detail": "200-300字完整解释：定义、关键点、常见误区、实际应用"
+}
 """
 
 

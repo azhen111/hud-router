@@ -23,6 +23,7 @@ import {
   setPcmCount,
   setLastMeta,
   showError,
+  appendDetail,
   wsUrlInput,
 } from './ui'
 
@@ -155,7 +156,14 @@ async function handlePush(raw: string) {
     return
   }
   if (parsed && typeof parsed === 'object') {
-    const obj = parsed as { text?: unknown; clear?: unknown; error?: unknown; status?: unknown }
+    const obj = parsed as {
+      text?: unknown
+      detail?: unknown
+      question?: unknown
+      clear?: unknown
+      error?: unknown
+      status?: unknown
+    }
     if (typeof obj.error === 'string') {
       showError(new Error(obj.error))
       setStatus('error', obj.error)
@@ -164,6 +172,9 @@ async function handlePush(raw: string) {
     if (typeof obj.status === 'string') {
       setStatus('ok', obj.status)
       return
+    }
+    if (typeof obj.detail === 'string' && obj.detail.trim()) {
+      appendDetail(typeof obj.question === 'string' ? obj.question : '', obj.detail)
     }
     if (obj.clear === true) {
       try {
@@ -174,7 +185,7 @@ async function handlePush(raw: string) {
       }
       return
     }
-    if (typeof obj.text === 'string') {
+    if (typeof obj.text === 'string' && obj.text.trim()) {
       try {
         await showText(obj.text)
         setLatestText(obj.text)
@@ -183,8 +194,12 @@ async function handlePush(raw: string) {
       }
       return
     }
+    if (typeof obj.detail === 'string' && obj.detail.trim()) {
+      setLatestText('(phone only)')
+      return
+    }
   }
-  showError(new Error('期望 {"text":"..."} / {"status":...} / {"error":...}，收到: ' + raw))
+  showError(new Error('期望 {"text":"..."} / {"detail":"..."} / {"status":...} / {"error":...}，收到: ' + raw))
 }
 
 setStatus('connecting', '等待 EvenAppBridge…')

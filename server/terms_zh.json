@@ -1,8 +1,8 @@
 [
-  {"term": "REST", "variants": ["RST", "rest"]},
+  {"term": "REST", "variants": ["RST"]},
   {
     "term": "GraphQL",
-    "variants": ["GrafficQL", "GraficQL", "graphi", "Grapy"]
+    "variants": ["GrafficQL", "GraficQL", "Grapy"]
   },
   {"term": "Redis", "variants": ["readis", "瑞迪斯"]},
   {
@@ -13,7 +13,7 @@
   {"term": "gRPC", "variants": ["grpc", "GRPC"]},
   {"term": "JWT", "variants": ["GWT", "JWA", "JVA", "Jva"]},
   {"term": "Pod", "variants": ["pud"]},
-  {"term": "OAuth", "variants": ["OAUTH", "ouath", "oath"]},
+  {"term": "OAuth", "variants": ["OAUTH", "ouath"]},
   {"term": "Flex", "variants": ["FLCK", "FLACS", "福莱克斯"]},
   {"term": "Docker", "variants": ["Bocker"]},
   {"term": "HTTP", "variants": ["HTL"]},

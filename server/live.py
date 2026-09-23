@@ -20,7 +20,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, TextIO
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,6 +42,7 @@ from display_policy import (
     load_policy_settings,
 )
 from router import (
+    AnswerPayload,
     RouterConfigError,
     RouterResult,
     answer as answer_turn,
@@ -49,6 +50,7 @@ from router import (
     is_skip_answer,
     route,
 )
+from prompts import PERMISSIVE_JUDGE_APPEND
 from transcript_fix import (
     DEFAULT_FIX_SIMILARITY,
     TermEntry,
@@ -219,30 +221,72 @@ def format_router_timeout_skip(timeout_ms: int, source: str) -> str:
 
 
 def policy_enabled_from_args(args: argparse.Namespace) -> bool:
+    """Default off. --policy / LIVE_POLICY=1 turns it on."""
+    if getattr(args, "policy", False):
+        return True
     if getattr(args, "no_policy", False):
         return False
+    raw_on = _env("LIVE_POLICY", "").strip().lower()
+    if raw_on in {"1", "true", "yes", "on"}:
+        return True
     raw = _env("LIVE_NO_POLICY", "").strip().lower()
     if raw in {"1", "true", "yes", "on"}:
         return False
-    return True
+    return False
+
+
+def make_layer(
+    name: str,
+    allowed: bool,
+    reason: str,
+    ms: float,
+    **extra: Any,
+) -> dict[str, Any]:
+    rec: dict[str, Any] = {
+        "name": name,
+        "allowed": allowed,
+        "reason": reason,
+        "ms": round(ms, 1),
+    }
+    rec.update(extra)
+    return rec
+
+
+def print_layer(rel: float, rec: Mapping[str, Any]) -> None:
+    flag = "pass" if rec.get("allowed") else "block"
+    print(
+        f"{fmt_session_ts(rel)}   → layer {rec.get('name')}  {flag}  "
+        f"reason={rec.get('reason')}  ms={rec.get('ms')}",
+        flush=True,
+    )
 
 
 def pick_display_answer(
     *,
     two_tier: bool,
     judge_answer: str,
-    answer_text: str | None,
+    answer_text: str | AnswerPayload | None,
     answer_timed_out: bool,
 ) -> tuple[str | None, str | None]:
-    """Choose lens text. Two-tier ignores judge.answer. SKIP / timeout drop."""
+    """Choose lens hud. Two-tier ignores judge.answer. SKIP / timeout drop.
+
+    Empty-hud + detail is not a skip (caller still sends phone detail).
+    """
     if two_tier:
         if answer_timed_out:
             return None, "answer_timeout"
         if answer_text is None:
             return None, "answer_error"
-        if is_skip_answer(answer_text):
+        if isinstance(answer_text, AnswerPayload):
+            if answer_text.skipped and answer_text.no_push():
+                return None, "answer_skip"
+            if answer_text.no_push():
+                return None, "answer_empty"
+            hud = answer_text.glasses_text()
+            return hud if hud else "", None
+        if is_skip_answer(str(answer_text)):
             return None, "answer_skip"
-        return answer_text.strip(), None
+        return str(answer_text).strip(), None
     text = (judge_answer or "").strip()
     if not text:
         return None, "none"
@@ -374,10 +418,13 @@ def route_with_timeout(
     timeout_s: float,
     *,
     ignore_answer: bool = False,
+    extra_system: str | None = None,
 ) -> tuple[RouterResult | None, bool]:
     """Call route() once. On timeout return (None, True). No retry."""
     item, timed_out = call_with_timeout(
-        lambda: route(payload, ignore_answer=ignore_answer),
+        lambda: route(
+            payload, ignore_answer=ignore_answer, extra_system=extra_system
+        ),
         timeout_s,
         "live-judge",
     )
@@ -392,7 +439,7 @@ def answer_with_timeout(
     payload: dict[str, object],
     kind: str,
     timeout_s: float,
-) -> tuple[str | None, bool]:
+) -> tuple[AnswerPayload | None, bool]:
     """Answer tier. On timeout return (None, True). No retry."""
     item, timed_out = call_with_timeout(
         lambda: answer_turn(payload, kind=kind)[0],
@@ -401,7 +448,7 @@ def answer_with_timeout(
     )
     if timed_out:
         return None, True
-    if isinstance(item, str):
+    if isinstance(item, AnswerPayload):
         return item, False
     return None, False
 
@@ -442,6 +489,7 @@ class LiveSettings:
         fix_enabled: bool,
         fix_similarity: float,
         fix_entries: list[TermEntry],
+        permissive: bool,
     ) -> None:
         self.host = host
         self.port = port
@@ -464,6 +512,7 @@ class LiveSettings:
         self.fix_enabled = fix_enabled
         self.fix_similarity = fix_similarity
         self.fix_entries = fix_entries
+        self.permissive = permissive
 
 
 class LiveSession:
@@ -654,6 +703,7 @@ class LiveSession:
         fix_hits: list[Any] = []
         fix_ms = 0.0
         text = raw_text
+        layers: list[dict[str, Any]] = []
         if self.settings.fix_enabled and self.settings.fix_entries:
             t_fix = time.perf_counter()
             text, fix_hits = apply_fix(
@@ -677,6 +727,16 @@ class LiveSession:
                     f"term={hit.term}  sim={hit.similarity:.2f}",
                     flush=True,
                 )
+        fix_layer = make_layer(
+            "transcript_fix",
+            True,
+            "applied" if fix_hits else ("off" if not self.settings.fix_enabled else "identity"),
+            fix_ms,
+            hits=len(fix_hits),
+            enabled=self.settings.fix_enabled,
+        )
+        layers.append(fix_layer)
+        print_layer(self.now_rel(), fix_layer)
         stamp = fmt_session_ts(rel)
         print(
             f"{stamp} {display_speaker(role)}  ({turn.segments} segs)  {text}",
@@ -691,6 +751,9 @@ class LiveSession:
             reason = (
                 f"too_short ({n} < {self.settings.min_route_chars}; no keyterm hit)"
             )
+            min_layer = make_layer("min_route", False, reason, 0.0, chars=n)
+            layers.append(min_layer)
+            print_layer(self.now_rel(), min_layer)
             print(f"{stamp}   → skip  reason: {reason}", flush=True)
             self._write_turn_jsonl(
                 turn,
@@ -708,8 +771,12 @@ class LiveSession:
                 error=reason,
                 fix=_fix_record(raw_text, text, fix_hits, self.settings.fix_enabled),
                 extra_timings={"fix_ms": round(fix_ms, 1), "judge_ms": 0.0, "answer_ms": None},
+                layers=layers,
             )
             return
+        min_layer = make_layer("min_route", True, "ok", 0.0, chars=len(text.strip()))
+        layers.append(min_layer)
+        print_layer(self.now_rel(), min_layer)
 
         payload: dict[str, object] = {
             "recent_turns": [
@@ -747,6 +814,7 @@ class LiveSession:
                 error=str(exc),
                 fix=_fix_record(raw_text, text, fix_hits, self.settings.fix_enabled),
                 extra_timings={"fix_ms": round(fix_ms, 1), "judge_ms": 0.0, "answer_ms": None},
+                layers=layers,
             )
             await self._send_json({"error": str(exc)})
             return
@@ -758,8 +826,12 @@ class LiveSession:
         answer_rec: dict[str, Any] | None = None
         answer_ms: float | None = None
         display_src = ""
+        detail_src = ""
+        ans_payload: AnswerPayload | None = None
         if timed_out:
             skip_reason = "router_timeout"
+            layers.append(make_layer("judge", False, "timeout", judge_ms))
+            print_layer(self.now_rel(), layers[-1])
             print(
                 f"{fmt_session_ts(self.now_rel())}   → skip  reason: "
                 f"{format_router_timeout_skip(self.settings.router_timeout_ms, self.settings.router_timeout_source)}",
@@ -767,11 +839,24 @@ class LiveSession:
             )
         elif result is None:
             skip_reason = "router_error"
+            layers.append(make_layer("judge", False, "error", judge_ms))
+            print_layer(self.now_rel(), layers[-1])
             print(
                 f"{fmt_session_ts(self.now_rel())}   → skip  reason: router error",
                 flush=True,
             )
         elif result.should_respond:
+            layers.append(
+                make_layer(
+                    "judge",
+                    True,
+                    "trigger",
+                    judge_ms,
+                    kind=result.kind,
+                    confidence=result.confidence,
+                )
+            )
+            print_layer(self.now_rel(), layers[-1])
             print(
                 f"{fmt_session_ts(self.now_rel())}   → {Fore.GREEN}TRIGGER{Style.RESET_ALL}  "
                 f"conf={result.confidence:.2f}  judge_ms={judge_ms:.0f}",
@@ -785,7 +870,7 @@ class LiveSession:
                 )
                 t_ans = time.perf_counter()
                 try:
-                    ans_text, ans_to = await self.loop.run_in_executor(
+                    ans_payload, ans_to = await self.loop.run_in_executor(
                         None,
                         lambda: self._answer_once(
                             payload,
@@ -796,10 +881,12 @@ class LiveSession:
                 except RouterConfigError as exc:
                     skip_reason = "router_config"
                     print(f"{stamp}   → skip  answer config: {exc}", flush=True)
-                    ans_text, ans_to = None, False
+                    ans_payload, ans_to = None, False
                 answer_ms = (time.perf_counter() - t_ans) * 1000.0
                 if ans_to:
                     skip_reason = "answer_timeout"
+                    layers.append(make_layer("answer", False, "timeout", answer_ms))
+                    print_layer(self.now_rel(), layers[-1])
                     print(
                         f"{fmt_session_ts(self.now_rel())}   → skip  reason: "
                         f"answer_timeout  waited={self.settings.answer_timeout_ms}ms  "
@@ -807,41 +894,57 @@ class LiveSession:
                         flush=True,
                     )
                     answer_rec = {
-                        "text": None,
+                        "hud": None,
+                        "detail": None,
                         "skip": False,
                         "timeout": True,
                         "model": self.settings.answer_model,
                     }
-                elif ans_text is None:
+                elif ans_payload is None:
                     skip_reason = skip_reason or "answer_error"
+                    layers.append(make_layer("answer", False, "error", answer_ms))
+                    print_layer(self.now_rel(), layers[-1])
                     print(
                         f"{fmt_session_ts(self.now_rel())}   → skip  reason: answer error",
                         flush=True,
                     )
                     answer_rec = {
-                        "text": None,
+                        "hud": None,
+                        "detail": None,
                         "skip": False,
                         "timeout": False,
                         "model": self.settings.answer_model,
                     }
-                elif is_skip_answer(ans_text):
+                elif ans_payload.no_push():
                     skip_reason = "answer_skip"
+                    layers.append(make_layer("answer", False, "empty_or_skip", answer_ms))
+                    print_layer(self.now_rel(), layers[-1])
                     print(
-                        f"{fmt_session_ts(self.now_rel())}   → skip  reason: answer SKIP  "
+                        f"{fmt_session_ts(self.now_rel())}   → skip  reason: answer empty/SKIP  "
                         f"answer_ms={answer_ms:.0f}",
                         flush=True,
                     )
                     answer_rec = {
-                        "text": "SKIP",
-                        "skip": True,
+                        **ans_payload.to_dict(),
                         "timeout": False,
                         "model": self.settings.answer_model,
                     }
                 else:
-                    display_src = ans_text.strip()
+                    display_src = ans_payload.glasses_text()
+                    detail_src = ans_payload.detail
+                    layers.append(
+                        make_layer(
+                            "answer",
+                            True,
+                            "phone_only" if not display_src else "ok",
+                            answer_ms,
+                            hud_discarded=ans_payload.hud_discarded,
+                            hud_lines_truncated=ans_payload.hud_lines_truncated,
+                        )
+                    )
+                    print_layer(self.now_rel(), layers[-1])
                     answer_rec = {
-                        "text": display_src,
-                        "skip": False,
+                        **ans_payload.to_dict(),
                         "timeout": False,
                         "model": self.settings.answer_model,
                     }
@@ -849,47 +952,112 @@ class LiveSession:
                 display_src = (result.answer or "").strip()
                 if not display_src:
                     skip_reason = "none"
+                    layers.append(make_layer("answer", False, "single_shot_empty", 0.0))
+                    print_layer(self.now_rel(), layers[-1])
                     print(
                         f"{fmt_session_ts(self.now_rel())}   → skip  "
                         f"single-shot empty judge answer",
                         flush=True,
                     )
-            if display_src:
-                print(
-                    f"{fmt_session_ts(self.now_rel())}     {display_src}",
-                    flush=True,
-                )
-                allowed, display, policy_rec = apply_trigger_policy(
-                    self.policy_engine,
-                    display_src,
-                    result.confidence,
-                    result.kind,
-                )
-                if self._ttl_deadline_ms is not None and policy_rec is not None:
-                    policy_rec["ttl_deadline_ms"] = self._ttl_deadline_ms
-                if not allowed:
-                    skip_reason = f"policy_{policy_rec.get('reason', 'drop')}"
-                    print(
-                        f"{fmt_session_ts(self.now_rel())}   → skip  policy  "
-                        f"reason={policy_rec.get('reason')}  "
-                        f"budget_used={policy_rec.get('budget_used')}/{policy_rec.get('budget_max')}",
-                        flush=True,
-                    )
                 else:
+                    layers.append(make_layer("answer", True, "single_shot", 0.0))
+                    print_layer(self.now_rel(), layers[-1])
+            if display_src or detail_src:
+                if display_src:
                     print(
-                        f"{fmt_session_ts(self.now_rel())}   → policy  "
-                        f"action={policy_rec.get('action')}  mode={policy_rec.get('mode')}  "
-                        f"ttl={self.settings.policy.ttl_ms}ms",
+                        f"{fmt_session_ts(self.now_rel())}     {display_src}",
                         flush=True,
                     )
+                t_pol = time.perf_counter()
+                glasses_text = ""
+                if display_src:
+                    allowed, display, policy_rec = apply_trigger_policy(
+                        self.policy_engine,
+                        display_src,
+                        result.confidence,
+                        result.kind,
+                    )
+                    if self._ttl_deadline_ms is not None and policy_rec is not None:
+                        policy_rec["ttl_deadline_ms"] = self._ttl_deadline_ms
+                    pol_ms = (time.perf_counter() - t_pol) * 1000.0
+                    if not allowed:
+                        layers.append(
+                            make_layer(
+                                "policy",
+                                False,
+                                str(policy_rec.get("reason", "drop")),
+                                pol_ms,
+                                bypassed=not self.settings.policy_enabled,
+                            )
+                        )
+                        print_layer(self.now_rel(), layers[-1])
+                        print(
+                            f"{fmt_session_ts(self.now_rel())}   → skip  policy  "
+                            f"reason={policy_rec.get('reason')}  "
+                            f"budget_used={policy_rec.get('budget_used')}/{policy_rec.get('budget_max')}",
+                            flush=True,
+                        )
+                    else:
+                        glasses_text = display
+                        layers.append(
+                            make_layer(
+                                "policy",
+                                True,
+                                str(policy_rec.get("reason", "ok")),
+                                pol_ms,
+                                bypassed=not self.settings.policy_enabled,
+                            )
+                        )
+                        print_layer(self.now_rel(), layers[-1])
+                        print(
+                            f"{fmt_session_ts(self.now_rel())}   → policy  "
+                            f"action={policy_rec.get('action')}  mode={policy_rec.get('mode')}  "
+                            f"ttl={self.settings.policy.ttl_ms}ms",
+                            flush=True,
+                        )
+                else:
+                    policy_rec = policy_audit(
+                        enabled=self.settings.policy_enabled,
+                        allowed=False,
+                        reason="phone_only",
+                        action="drop",
+                        mode="none",
+                        confidence=result.confidence,
+                        display_text="",
+                        budget_used=None,
+                        budget_max=None,
+                        ttl_ms=None,
+                        ttl_deadline_ms=None,
+                        consume_budget=None,
+                    )
+                    layers.append(
+                        make_layer(
+                            "policy",
+                            True,
+                            "phone_only",
+                            0.0,
+                            bypassed=not self.settings.policy_enabled,
+                        )
+                    )
+                    print_layer(self.now_rel(), layers[-1])
+                if glasses_text or detail_src:
                     t_down = time.perf_counter()
-                    await self._send_json({"text": display})
+                    down: dict[str, Any] = {"question": text}
+                    if glasses_text:
+                        down["text"] = glasses_text
+                    if detail_src:
+                        down["detail"] = detail_src
+                    await self._send_json(down)
                     t_down = (time.perf_counter() - t_down) * 1000.0
                     pushed = True
+                    if not glasses_text:
+                        skip_reason = skip_reason or "phone_only"
         else:
             skip_reason = "none"
             reason = result.reason if result is not None else "none"
             conf = result.confidence if result is not None else 0.0
+            layers.append(make_layer("judge", False, reason, judge_ms, confidence=conf))
+            print_layer(self.now_rel(), layers[-1])
             print(
                 f"{fmt_session_ts(self.now_rel())}   → skip  "
                 f"conf={conf:.2f}  reason: {reason}",
@@ -917,6 +1085,7 @@ class LiveSession:
                 "answer_ms": None if answer_ms is None else round(answer_ms, 1),
                 "router_ms": round(judge_ms, 1),
             },
+            layers=layers,
         )
 
     def _route_once(
@@ -924,12 +1093,17 @@ class LiveSession:
     ) -> tuple[RouterResult | None, bool]:
         with self.route_lock:
             return route_with_timeout(
-                payload, timeout_s, ignore_answer=self.settings.two_tier
+                payload,
+                timeout_s,
+                ignore_answer=self.settings.two_tier,
+                extra_system=(
+                    PERMISSIVE_JUDGE_APPEND if self.settings.permissive else None
+                ),
             )
 
     def _answer_once(
         self, payload: dict[str, object], kind: str, timeout_s: float
-    ) -> tuple[str | None, bool]:
+    ) -> tuple[AnswerPayload | None, bool]:
         with self.route_lock:
             return answer_with_timeout(payload, kind, timeout_s)
 
@@ -957,6 +1131,7 @@ class LiveSession:
         fix: dict[str, Any] | None = None,
         answer: dict[str, Any] | None = None,
         extra_timings: dict[str, Any] | None = None,
+        layers: list[dict[str, Any]] | None = None,
     ) -> None:
         record: dict[str, Any] = {
             "kind": "turn",
@@ -994,6 +1169,8 @@ class LiveSession:
             record["fix"] = fix
         if answer is not None:
             record["answer"] = answer
+        if layers is not None:
+            record["layers"] = layers
         self._write_record(record)
 
     async def _send_json(self, obj: dict[str, Any]) -> None:
@@ -1090,9 +1267,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="do not send keyterm (A/B baseline)",
     )
     p.add_argument(
+        "--policy",
+        action="store_true",
+        help="enable display_policy (default off; LIVE_POLICY=1)",
+    )
+    p.add_argument(
         "--no-policy",
         action="store_true",
-        help="bypass display_policy; router trigger pushes as before (A/B)",
+        help="keep display_policy off (default)",
+    )
+    p.add_argument(
+        "--permissive",
+        action="store_true",
+        help="append 'When in doubt, prefer to respond.' to judge at runtime",
     )
     p.add_argument(
         "--no-fix",
@@ -1220,6 +1407,8 @@ def build_settings(args: argparse.Namespace) -> LiveSettings:
         fix_enabled=fix_on,
         fix_similarity=fix_sim,
         fix_entries=fix_entries,
+        permissive=bool(getattr(args, "permissive", False))
+        or _env("LIVE_PERMISSIVE", "").strip().lower() in {"1", "true", "yes", "on"},
     )
 
 
@@ -1255,7 +1444,7 @@ def log_startup(settings: LiveSettings) -> None:
             flush=True,
         )
     else:
-        print("policy=off  (--no-policy / LIVE_NO_POLICY)", flush=True)
+        print("policy=off  (default; --policy / LIVE_POLICY=1 to enable)", flush=True)
     if settings.two_tier:
         print(
             f"two_tier=on  judge={_env('ROUTER_MODEL', '(ROUTER_MODEL)')}  "
@@ -1266,6 +1455,11 @@ def log_startup(settings: LiveSettings) -> None:
         )
     else:
         print("two_tier=off  (--single-shot / LIVE_TWO_TIER=0); judge answer used", flush=True)
+    print(
+        f"permissive={'on' if settings.permissive else 'off'}  "
+        f"(runtime judge append only; ROUTER_SYSTEM_PROMPT unchanged)",
+        flush=True,
+    )
     if settings.fix_enabled:
         print(
             f"fix=on  similarity={settings.fix_similarity}  "

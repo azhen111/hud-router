@@ -14,7 +14,7 @@ from typing import Any
 
 from difflib import SequenceMatcher
 
-DEFAULT_FIX_SIMILARITY = 0.6
+DEFAULT_FIX_SIMILARITY = 0.85  # unused for matching; replacements are exact variants only
 # Latin / dotted terms only. CJK and mixed (库布尔netes) are exact-needle
 # replacements so "前端中FLCK" does not become one token.
 _TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9/_.+-]*")
@@ -118,48 +118,19 @@ def flatten_keyterms(entries: list[TermEntry]) -> list[str]:
     return out
 
 
-def _min_fuzzy_len(token: str) -> int:
-    if any("\u4e00" <= c <= "\u9fff" for c in token):
-        return 2
-    return 3
-
-
-def _best_match(
-    token: str,
+def _lookup_tables(
     entries: list[TermEntry],
-    threshold: float,
-) -> tuple[TermEntry, float] | None:
-    exact_fold = token.casefold()
-    canonical = {e.term.casefold() for e in entries}
-    if exact_fold in canonical:
-        for entry in entries:
-            if entry.term.casefold() == exact_fold:
-                if token != entry.term:
-                    return entry, 1.0
-                return None
-        return None
-    # "鉴权吗" must not collapse to "鉴权"
-    for canon in canonical:
-        if exact_fold.startswith(canon) and len(exact_fold) > len(canon):
-            return None
-    best: tuple[TermEntry, float] | None = None
-    tied = False
+) -> tuple[dict[str, TermEntry], dict[str, TermEntry]]:
+    """casefold variant → entry; casefold canonical → entry."""
+    variants: dict[str, TermEntry] = {}
+    canons: dict[str, TermEntry] = {}
     for entry in entries:
-        score = 0.0
-        for needle in entry.needles():
-            if token.casefold() == needle.casefold():
-                return entry, 1.0
-            score = max(score, similarity(token, needle))
-        if score + 1e-9 < threshold:
-            continue
-        if best is None or score > best[1] + 1e-9:
-            best = (entry, score)
-            tied = False
-        elif abs(score - best[1]) <= 1e-9 and entry.term != best[0].term:
-            tied = True
-    if tied:
-        return None
-    return best
+        canons[entry.term.casefold()] = entry
+        for raw in entry.variants:
+            key = raw.casefold()
+            if key and key not in canons:
+                variants[key] = entry
+    return variants, canons
 
 
 def _has_cjk(text: str) -> bool:
@@ -221,29 +192,31 @@ def apply_fix(
     *,
     threshold: float = DEFAULT_FIX_SIMILARITY,
 ) -> tuple[str, list[FixHit]]:
-    """Replace ASR tokens that match a term or variant. Identity if no hits."""
+    """Replace tokens that match an explicit variant (or canonical casing).
+
+    No edit-distance / fuzzy match. ``threshold`` is accepted for callers
+    but is not used.
+    """
+    del threshold
     if not text or not entries:
         return text, []
     hits: list[FixHit] = []
+    variant_map, canon_map = _lookup_tables(entries)
 
     def repl(match: re.Match[str]) -> str:
         token = match.group(0)
-        if len(token) < _min_fuzzy_len(token):
-            # still allow exact variant hits (e.g. "线流")
-            for entry in entries:
-                for needle in entry.needles():
-                    if token.casefold() == needle.casefold() and token != entry.term:
-                        hits.append(FixHit(token, entry.term, entry.term, 1.0))
-                        return entry.term
+        key = token.casefold()
+        if key in variant_map:
+            entry = variant_map[key]
+            if token != entry.term:
+                hits.append(FixHit(token, entry.term, entry.term, 1.0))
+                return entry.term
             return token
-        found = _best_match(token, entries, threshold)
-        if found is None:
-            return token
-        entry, score = found
-        if token == entry.term:
-            return token
-        hits.append(FixHit(token, entry.term, entry.term, score))
-        return entry.term
+        if key in canon_map and token != canon_map[key].term:
+            entry = canon_map[key]
+            hits.append(FixHit(token, entry.term, entry.term, 1.0))
+            return entry.term
+        return token
 
     fixed = _apply_cjk_variants(text, entries, hits)
     fixed = _TOKEN_RE.sub(repl, fixed)

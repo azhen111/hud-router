@@ -296,7 +296,7 @@ class PolicyWiring(unittest.TestCase):
         self.assertEqual(audit["mode"], "full")
         self.assertEqual(audit["budget_used"], 1)
         self.assertEqual(audit["budget_max"], 1)
-        self.assertEqual(audit["ttl_ms"], 10_000)
+        self.assertEqual(audit["ttl_ms"], 25_000)
 
     def test_deny_below_hint(self) -> None:
         clock = FakeClock()
@@ -327,7 +327,7 @@ class PolicyWiring(unittest.TestCase):
 
     def test_deny_over_length(self) -> None:
         clock = FakeClock()
-        p, _ = make_policy(clock)
+        p, _ = make_policy(clock, max_chars=56)
         allowed, _, audit = apply_trigger_policy(p, "测" * 57, 0.90)
         self.assertFalse(allowed)
         self.assertEqual(audit["reason"], "over_max_two_lines")
@@ -349,24 +349,32 @@ class PolicyWiring(unittest.TestCase):
             log_startup(settings)
         self.assertIn("policy=off", buf.getvalue())
 
+    def test_default_policy_off(self) -> None:
+        settings = build_settings(parse_args(["--log", "/tmp/live_poloff.jsonl"]))
+        self.assertFalse(settings.policy_enabled)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            log_startup(settings)
+        self.assertIn("policy=off", buf.getvalue())
+
     def test_startup_prints_policy_on(self) -> None:
-        settings = build_settings(parse_args(["--log", "/tmp/live_pol.jsonl"]))
+        settings = build_settings(parse_args(["--policy", "--log", "/tmp/live_pol.jsonl"]))
         self.assertTrue(settings.policy_enabled)
         self.assertEqual(settings.policy.conf_full, 0.85)
         self.assertEqual(settings.policy.conf_hint, 0.70)
         self.assertEqual(settings.policy.budget_window_ms, 60_000)
         self.assertEqual(settings.policy.budget_max, 1)
-        self.assertEqual(settings.policy.ttl_ms, 10_000)
+        self.assertEqual(settings.policy.ttl_ms, 25_000)
         self.assertEqual(settings.policy.dedup_window, 10)
-        self.assertEqual(settings.policy.max_chars, 56)
+        self.assertEqual(settings.policy.max_chars, 240)
         buf = io.StringIO()
         with redirect_stdout(buf):
             log_startup(settings)
         out = buf.getvalue()
         self.assertIn("policy=on", out)
         self.assertIn("full=0.85", out)
-        self.assertIn("ttl=10000ms", out)
-        self.assertIn("max_chars=56", out)
+        self.assertIn("ttl=25000ms", out)
+        self.assertIn("max_chars=240", out)
 
 
 class TwoTierWiring(unittest.TestCase):
@@ -383,6 +391,9 @@ class TwoTierWiring(unittest.TestCase):
         self.assertIn("answer_timeout_ms=4000", out)
         self.assertIn("judge.answer ignored", out)
         self.assertIn("fix=on", out)
+        self.assertIn("policy=off", out)
+        self.assertFalse(settings.policy_enabled)
+        self.assertFalse(settings.permissive)
         self.assertIn("keyterms_dg=", out)
         self.assertIn("fix_entries=", out)
         self.assertIn("canon only", out)
@@ -414,6 +425,16 @@ class TwoTierWiring(unittest.TestCase):
         )
         self.assertEqual(text, "JWT：JSON Web Token")
         self.assertIsNone(skip)
+
+    def test_permissive_flag(self) -> None:
+        settings = build_settings(
+            parse_args(["--permissive", "--log", "/tmp/live_perm.jsonl"])
+        )
+        self.assertTrue(settings.permissive)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            log_startup(settings)
+        self.assertIn("permissive=on", buf.getvalue())
 
     def test_two_tier_skip_and_timeout(self) -> None:
         text, skip = pick_display_answer(

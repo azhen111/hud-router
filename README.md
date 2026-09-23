@@ -68,7 +68,7 @@ Copy `.env.example` to `.env` or export the same variables. Nothing is hardcoded
 
 - `kind`: `answer` | `term` | `number` | `translation` | `none`
 - `answer` is empty when `should_respond` is false
-- Non-empty answers are at most 56 characters (full-width = 1; at most two G2 lines). Over-length answers are converted to `should_respond=false` (`truncated_to_none`); the model's pre-clear text is kept in `original_answer` only when that flag is true (otherwise empty). `evaluate.py` reports this as observational `suppressed_over_length`, not an acceptance gate
+- Live answer-tier `hud` is at most 240 characters (28 per line, 10 lines). Judge `ROUTER_SYSTEM_PROMPT` still says 56; over-length on the judge path uses `MAX_ANSWER_CHARS=240` (`truncated_to_none`). `evaluate.py` reports this as observational `suppressed_over_length`, not an acceptance gate
 - `needs_more_context: true` forces `should_respond: false`
 
 ## Run the CLI
@@ -125,5 +125,5 @@ Even with `temperature=0`, about 10% output uncertainty has been observed. **Run
 
 - `asr/` — microphone → Deepgram → turn aggregator → `route()`. See `asr/README.md`.
 - `glasses/` — G2 text display (`glasses/app` official template + `glasses/display_server.py`). See `glasses/README.md` and `glasses/SDK_NOTES.md`.
-- `server/display_policy.py` — confidence / budget / dedup / TTL / 56-char cap (wrap at 28). See `server/README.md`.
-- `server/live.py` — Phase 3：G2 PCM → Deepgram → aggregator → **transcript_fix** → **judge** + **answer**（默认两级；`--single-shot` 可关）→ display_policy → 镜片。见 `server/README.md` / `server/ASR_EVAL.md`。
+- `server/display_policy.py` — confidence / budget / dedup / TTL 25s / 240-char cap (wrap hint 28). See `server/README.md`.
+- `server/live.py` — Phase 3：G2 PCM → Deepgram → aggregator → **transcript_fix** → **judge** + **answer**（`hud`+`detail`；默认 policy 关）→ 镜片 + 手机详解列表。见 `server/README.md` / `server/ASR_EVAL.md`。

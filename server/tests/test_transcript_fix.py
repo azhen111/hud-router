@@ -128,12 +128,27 @@ class NoFixFlag(unittest.TestCase):
         self.assertFalse(settings.fix_enabled)
         on = build_settings(parse_args(["--log", "/tmp/live_fixon.jsonl"]))
         self.assertTrue(on.fix_enabled)
-        self.assertAlmostEqual(on.fix_similarity, 0.6)
+        self.assertAlmostEqual(on.fix_similarity, 0.85)
 
 
 class SimilarityHelper(unittest.TestCase):
     def test_bocker_docker(self) -> None:
         self.assertGreaterEqual(similarity("Bocker", "Docker"), 0.6)
+
+    def test_pdf_does_not_become_pod(self) -> None:
+        entries = load_term_entries(DEFAULT_TERMS_PATH)
+        fixed, hits = apply_fix("PDF 里的 Pod 怎么配", entries)
+        self.assertEqual(fixed, "PDF 里的 Pod 怎么配")
+        self.assertEqual(hits, [])
+        near, hits2 = apply_fix("Pud 启动失败", entries)
+        self.assertEqual(near, "Pod 启动失败")
+        self.assertEqual([h.term for h in hits2], ["Pod"])
+
+    def test_no_fuzzy_unlisted_token(self) -> None:
+        entries = load_term_entries(DEFAULT_TERMS_PATH)
+        fixed, hits = apply_fix("Bockerx 不是词表", entries)
+        self.assertEqual(fixed, "Bockerx 不是词表")
+        self.assertEqual(hits, [])
 
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@ from openai import OpenAI
 
 from prompts import (
     ANSWER_SYSTEM_PROMPT,
+    PERMISSIVE_JUDGE_APPEND,
     ROUTER_SYSTEM_PROMPT,
     assemble_answer_user_message,
     assemble_user_message,
@@ -22,7 +23,9 @@ from prompts import (
 )
 
 MAX_TURNS: Final[int] = 6
-MAX_ANSWER_CHARS: Final[int] = 56  # full-width = 1 (Unicode code points); two G2 lines
+MAX_ANSWER_CHARS: Final[int] = 240  # one-screen HUD; full-width = 1
+HUD_LINE_CHARS: Final[int] = 28
+HUD_MAX_LINES: Final[int] = 10
 ALLOWED_KINDS: Final[frozenset[str]] = frozenset(
     {"answer", "term", "number", "translation", "none"}
 )
@@ -311,7 +314,7 @@ def normalize_result(
         truncated_to_none = False
         original_answer = ""
     elif over_length:
-        # Do not truncate-and-keep: a >56 answer is a failed trigger.
+        # Do not truncate-and-keep: a >240 answer is a failed trigger.
         # Keep the pre-clear text so evaluate/reports can show what the
         # model actually wrote (id=9 / id=29 were blank without this).
         original_answer = answer
@@ -441,19 +444,20 @@ def complete_chat(
     model: str,
     *,
     json_mode: bool = True,
+    max_tokens: int = 256,
 ) -> tuple[str, CallTiming]:
     """One chat completion. Prefer JSON mode; fall back if unsupported.
 
     Raises on transport/API failure so `route()` can degrade. Timeout and
     HTTP errors are not retried (SDK max_retries forced to 0). The extra
     JSON-mode fallback is only when the endpoint rejects response_format,
-    not on timeout. Answer-tier calls pass ``json_mode=False`` (plain text).
+    not on timeout.
     """
     common: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "temperature": 0.0,  # deterministic; keep at 0.0
-        "max_tokens": 256,
+        "max_tokens": max_tokens,
     }
     global _LAST_CALL_TIMING
     t0: float = time.perf_counter()
@@ -503,6 +507,7 @@ def route(
     client: OpenAI | None = None,
     completion_fn: Callable[[list[dict[str, str]]], str] | None = None,
     ignore_answer: bool = False,
+    extra_system: str | None = None,
 ) -> RouterResult:
     """Decide whether to show a short HUD answer for the last transcript turn.
 
@@ -526,8 +531,12 @@ def route(
     else:
         wearer_note = str(wearer_note_raw)
     user_message: str = assemble_user_message(turns, locale, wearer_note)
+    system: str = ROUTER_SYSTEM_PROMPT
+    extra: str = (extra_system or "").strip()
+    if extra:
+        system = f"{ROUTER_SYSTEM_PROMPT.rstrip()}\n\n{extra}"
     messages: list[dict[str, str]] = [
-        {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
+        {"role": "system", "content": system},
         {"role": "user", "content": user_message},
     ]
     raw_text: str
@@ -556,18 +565,117 @@ def is_skip_answer(text: str) -> bool:
     return text.strip() == "SKIP"
 
 
+@dataclass(frozen=True)
+class AnswerPayload:
+    """Answer-tier JSON after hud post-process."""
+
+    hud: str
+    detail: str
+    raw: str = ""
+    parse_ok: bool = True
+    hud_wrapped: bool = False
+    hud_lines_truncated: int = 0
+    hud_discarded: bool = False
+    skipped: bool = False
+
+    def glasses_text(self) -> str:
+        return self.hud.strip()
+
+    def has_detail(self) -> bool:
+        return bool(self.detail.strip())
+
+    def no_push(self) -> bool:
+        return not self.glasses_text() and not self.has_detail()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "hud": self.hud,
+            "detail": self.detail,
+            "parse_ok": self.parse_ok,
+            "hud_wrapped": self.hud_wrapped,
+            "hud_lines_truncated": self.hud_lines_truncated,
+            "hud_discarded": self.hud_discarded,
+            "skipped": self.skipped,
+        }
+
+
+def wrap_hud_line(line: str, width: int = HUD_LINE_CHARS) -> list[str]:
+    if not line:
+        return [""]
+    out: list[str] = []
+    rest = line
+    while rest:
+        out.append(rest[:width])
+        rest = rest[width:]
+    return out
+
+
+def postprocess_hud(raw: str) -> tuple[str, dict[str, Any]]:
+    """Wrap at 28, cap 10 lines, discard if content chars > 240."""
+    stats: dict[str, Any] = {
+        "wrapped": False,
+        "lines_truncated": 0,
+        "discarded": False,
+    }
+    text = raw.replace("\r\n", "\n").replace("\r", "\n")
+    if is_skip_answer(text) or not text.strip():
+        return "", stats
+    content_len = answer_char_len(text.replace("\n", ""))
+    if content_len > MAX_ANSWER_CHARS:
+        stats["discarded"] = True
+        return "", stats
+    lines: list[str] = []
+    for part in text.split("\n"):
+        pieces = wrap_hud_line(part)
+        if len(pieces) > 1:
+            stats["wrapped"] = True
+        lines.extend(pieces)
+    if len(lines) > HUD_MAX_LINES:
+        stats["lines_truncated"] = len(lines) - HUD_MAX_LINES
+        lines = lines[:HUD_MAX_LINES]
+    result = "\n".join(lines)
+    if answer_char_len(result.replace("\n", "")) > MAX_ANSWER_CHARS:
+        stats["discarded"] = True
+        return "", stats
+    return result, stats
+
+
+def parse_answer_output(text: str | None) -> AnswerPayload:
+    """Parse answer-tier JSON. Empty hud + empty detail = no trigger."""
+    raw = "" if text is None else str(text)
+    if is_skip_answer(raw):
+        return AnswerPayload(hud="", detail="", raw=raw, skipped=True)
+    obj = extract_json_object(raw)
+    if obj is None:
+        return AnswerPayload(
+            hud="", detail="", raw=raw, parse_ok=False, skipped=True
+        )
+    hud_raw = str(obj.get("hud") or "")
+    detail = str(obj.get("detail") or "").strip()
+    if is_skip_answer(hud_raw):
+        hud_raw = ""
+    hud, stats = postprocess_hud(hud_raw)
+    skipped = not hud.strip() and not detail
+    return AnswerPayload(
+        hud=hud,
+        detail=detail,
+        raw=raw,
+        parse_ok=True,
+        hud_wrapped=bool(stats["wrapped"]),
+        hud_lines_truncated=int(stats["lines_truncated"]),
+        hud_discarded=bool(stats["discarded"]),
+        skipped=skipped,
+    )
+
+
 def answer(
     payload: Mapping[str, Any],
     *,
     kind: str = "answer",
     client: OpenAI | None = None,
     completion_fn: Callable[[list[dict[str, str]]], str] | None = None,
-) -> tuple[str, CallTiming | None]:
-    """Answer-tier: plain-text HUD line. Judge JSON ``answer`` is not used.
-
-    Call only when the judge returned ``should_respond=true``. Output is
-    the model text as-is (caller treats strip==SKIP as no trigger).
-    """
+) -> tuple[AnswerPayload, CallTiming | None]:
+    """Answer-tier: JSON ``hud`` + ``detail``. Judge ``answer`` is not used."""
     turns: list[Turn] = window_turns(payload)
     locale: str = str(payload.get("locale") or "ja")
     wearer_note_raw: object = payload.get("wearer_note")
@@ -584,11 +692,13 @@ def answer(
         {"role": "user", "content": user_message},
     ]
     if completion_fn is not None:
-        return str(completion_fn(messages) or ""), None
+        return parse_answer_output(str(completion_fn(messages) or "")), None
     active: OpenAI = client if client is not None else build_client()
     model: str = get_answer_model()
-    raw_text, timing = complete_chat(active, messages, model, json_mode=False)
-    return raw_text, timing
+    raw_text, timing = complete_chat(
+        active, messages, model, json_mode=True, max_tokens=1024
+    )
+    return parse_answer_output(raw_text), timing
 
 
 def result_json(result: RouterResult) -> str:
@@ -598,11 +708,15 @@ def result_json(result: RouterResult) -> str:
 
 __all__ = [
     "ALLOWED_KINDS",
+    "HUD_LINE_CHARS",
+    "HUD_MAX_LINES",
     "MAX_ANSWER_CHARS",
     "MAX_TURNS",
+    "PERMISSIVE_JUDGE_APPEND",
     "Kind",
     "RoutePayload",
     "RouterConfigError",
+    "AnswerPayload",
     "CallTiming",
     "RouterResult",
     "Speaker",
@@ -618,7 +732,9 @@ __all__ = [
     "is_skip_answer",
     "load_dotenv",
     "normalize_result",
+    "parse_answer_output",
     "parse_model_output",
+    "postprocess_hud",
     "result_json",
     "route",
     "window_turns",
