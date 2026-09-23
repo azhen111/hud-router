@@ -2,11 +2,11 @@
 
 ## Phase 3 — live 通路（ASR 加固）
 
-`server/live.py`：眼镜 PCM 上行 → Deepgram nova-3（`keyterm`）→ `asr/aggregator.py`（独立静音定时器，默认 1200ms；`speech_final` 不关窗）→ 短句过滤（默认 3 字，命中 keyterm 则豁免）→ `route()` → **`display_policy`（默认开）** → `{"text": ...}` 下行上镜。TTL 到期再推占位符 `・`。
+`server/live.py`：眼镜 PCM 上行 → Deepgram nova-3（`keyterm`）→ aggregator → **`transcript_fix`（默认开）** → **judge**（`ROUTER_SYSTEM_PROMPT`，只取 should_respond / conf / kind / reason / needs_more_context）→ **answer**（`ANSWER_SYSTEM_PROMPT`，仅 trigger）→ **`display_policy`** → `{"text": ...}`。TTL 到期再推 `・`。
 
-**Self 政策：** `speakerRole` / `speaker` 只写 jsonl 和终端。Self 发话**不再**在 `route()` 前丢掉，和 Other 一样进模型。
+**两级默认开。** 未配置 `ANSWER_MODEL` 时两级用同一个 `ROUTER_MODEL`（通常 gpt-4o-mini）。Judge 的 `answer` **不上镜**。`--single-shot` / `LIVE_TWO_TIER=0` 恢复单次 judge（用 judge.answer，方便 A/B）。
 
-**不做：** RAG、两级模型、Windows 环回采音。`--no-policy` / `LIVE_NO_POLICY=1` 可整段关掉策略做 A/B。
+**不做：** RAG、LLM 纠错、改 `ROUTER_SYSTEM_PROMPT` / testcases* / display_policy 语义。
 
 **不要和** `glasses/display_server.py` **抢同一端口**（默认都是 8766）。
 
@@ -18,7 +18,7 @@ Nova-3 **不支持** `keywords`（HTTP 400 / 流式 WS 静默断开）。必须�
 - Keywords 页写明 Nova-3 必须改用 Keyterm：https://developers.deepgram.com/docs/keywords
 - streaming nova-3 + keywords 失败：https://github.com/deepgram/deepgram-js-sdk/issues/474
 
-词表：`server/terms_zh.json`（约 50 个中英 IT 词）。编辑该 JSON 数组即可；不要写 `term:1.5`，不要逗号拼一条。启动时打一行 `keyterms=N from <path> (nova-3 uses keyterm, not keywords)`。`--no-keyterms` 可关，方便 A/B。
+词表：`server/terms_zh.json`。元素可以是纯字符串，或 `{"term":"JWT","variants":["GWT","JWA"]}`。Deepgram `keyterm` 会抽出 `term` + 全部 variants（仍不要 `:权重`）。纠错层用同一张表做确定性模糊匹配。`--no-keyterms` 只关 Deepgram 词表；`--no-fix` 关纠错。
 
 官方写明 **Nova-3 的 monolingual 和 multilingual 都可以用 `keyterm`**：https://developers.deepgram.com/docs/keyterm 。Self-hosted 2025-12-10 changelog 也写了 Nova-3 Multi 的 multilingual keyterm（最多约 500 token）：https://developers.deepgram.com/changelog/2025/12/10 。旧版 hosted/self-hosted 模型若报 `The selected Nova-3 model does not support keyterm prompting`，是模型版本问题，不是 `language=multi` 本身禁 keyterm。本仓库对 `zh` 和 `multi` 都传同一份 `keyterm` 列表，从不传 `keywords`。
 
@@ -36,6 +36,11 @@ export LIVE_LANG=zh
 export AGG_SILENCE_MS=1200
 export MIN_ROUTE_CHARS=3
 export LIVE_ROUTER_TIMEOUT_MS=3000
+export ANSWER_MODEL=          # 空 = 与 ROUTER_MODEL 相同
+export ANSWER_TIMEOUT_MS=4000
+export LIVE_TWO_TIER=1        # 0 或 --single-shot = 单次 judge
+export LIVE_NO_FIX=0
+export FIX_SIMILARITY=0.6
 export LIVE_WEARER_NOTE='佩戴者是软件工程师，当前对话为 IT 技术讨论'
 ```
 
@@ -46,6 +51,8 @@ python server/live.py
 python server/live.py --host 0.0.0.0 --port 8766 --lang zh
 python server/live.py --lang multi --log live_multi.jsonl
 python server/live.py --no-policy --log live_nopolicy.jsonl
+python server/live.py --no-fix --log live_nofix.jsonl
+python server/live.py --single-shot --log live_singleshot.jsonl
 ```
 
 启动横幅必须能看到 `router_timeout_ms=3000`（以及 `source=default|cli|env`）和 `policy=on` / `policy=off`。若 `.env` 里还留着 `LIVE_ROUTER_TIMEOUT_MS=1800`，横幅会打印 `source=env LIVE_ROUTER_TIMEOUT_MS=1800`——那不是代码默认，是环境覆盖。
@@ -160,6 +167,11 @@ python server/live.py --lang multi --log live_multi.jsonl
 | min route chars | 3 | `--min-route-chars` / `MIN_ROUTE_CHARS` | 聚合后短于此且未命中 keyterm 则 `skip_reason=too_short` |
 | keyterm 词表 | `server/terms_zh.json` | `--terms` / `LIVE_TERMS_PATH` | nova-3 `keyterm` 列表 |
 | 关闭 keyterm | 关 | `--no-keyterms` | A/B 基线 |
+| two-tier | **开** | `--single-shot` / `LIVE_TWO_TIER=0` | 关则只用 judge.answer（A/B） |
+| ANSWER_MODEL | =ROUTER_MODEL | `ANSWER_MODEL` | 未设则与 judge 同模型 |
+| answer timeout | 4000 ms | `--answer-timeout-ms` / `ANSWER_TIMEOUT_MS` | 仅 trigger 后调用；超时丢轮、不重试 |
+| transcript fix | **开** | `--no-fix` / `LIVE_NO_FIX` | 聚合后、judge 前确定性纠错 |
+| FIX_SIMILARITY | 0.6 | `--fix-similarity` / `FIX_SIMILARITY` | 模糊匹配阈值 |
 | display policy | **开** | `--no-policy` / `LIVE_NO_POLICY` | 关掉则 TRIGGER 直推，不经策略 |
 | POLICY_CONF_FULL | 0.85 | `--conf-full` / `POLICY_CONF_FULL` | ≥ 此值整段 |
 | POLICY_CONF_HINT | 0.70 | `--conf-hint` / `POLICY_CONF_HINT` | HINT≤c<FULL 只显示 `・?` |

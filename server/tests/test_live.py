@@ -16,6 +16,7 @@ from server.live import (
     DEFAULT_TERMS_PATH,
     apply_trigger_policy,
     build_settings,
+    pick_display_answer,
     display_speaker,
     format_router_timeout_skip,
     hits_keyterm,
@@ -124,7 +125,7 @@ class KeytermLoad(unittest.TestCase):
     def test_terms_file_has_about_fifty_plain_terms(self) -> None:
         terms = load_keyterms(DEFAULT_TERMS_PATH)
         self.assertGreaterEqual(len(terms), 45)
-        self.assertLessEqual(len(terms), 90)
+        self.assertLessEqual(len(terms), 180)
         required = {
             "Kubernetes",
             "Kafka",
@@ -313,6 +314,64 @@ class PolicyWiring(unittest.TestCase):
         self.assertIn("full=0.85", out)
         self.assertIn("ttl=10000ms", out)
         self.assertIn("max_chars=56", out)
+
+
+class TwoTierWiring(unittest.TestCase):
+    def test_defaults_two_tier_and_fix_on(self) -> None:
+        settings = build_settings(parse_args(["--log", "/tmp/live_tier.jsonl"]))
+        self.assertTrue(settings.two_tier)
+        self.assertTrue(settings.fix_enabled)
+        self.assertEqual(settings.answer_timeout_ms, 4000)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            log_startup(settings)
+        out = buf.getvalue()
+        self.assertIn("two_tier=on", out)
+        self.assertIn("answer_timeout_ms=4000", out)
+        self.assertIn("judge.answer ignored", out)
+        self.assertIn("fix=on", out)
+
+    def test_single_shot_uses_judge_answer(self) -> None:
+        settings = build_settings(
+            parse_args(["--single-shot", "--log", "/tmp/live_ss.jsonl"])
+        )
+        self.assertFalse(settings.two_tier)
+        text, skip = pick_display_answer(
+            two_tier=False,
+            judge_answer="JWT：JSON Web Token",
+            answer_text="should not be used",
+            answer_timed_out=False,
+        )
+        self.assertEqual(text, "JWT：JSON Web Token")
+        self.assertIsNone(skip)
+
+    def test_two_tier_ignores_judge_answer(self) -> None:
+        text, skip = pick_display_answer(
+            two_tier=True,
+            judge_answer="JUDGE SHOULD BE IGNORED",
+            answer_text="JWT：JSON Web Token",
+            answer_timed_out=False,
+        )
+        self.assertEqual(text, "JWT：JSON Web Token")
+        self.assertIsNone(skip)
+
+    def test_two_tier_skip_and_timeout(self) -> None:
+        text, skip = pick_display_answer(
+            two_tier=True,
+            judge_answer="x",
+            answer_text="SKIP",
+            answer_timed_out=False,
+        )
+        self.assertIsNone(text)
+        self.assertEqual(skip, "answer_skip")
+        text2, skip2 = pick_display_answer(
+            two_tier=True,
+            judge_answer="x",
+            answer_text="anything",
+            answer_timed_out=True,
+        )
+        self.assertIsNone(text2)
+        self.assertEqual(skip2, "answer_timeout")
 
 
 class PolicyTtlTimer(unittest.IsolatedAsyncioTestCase):

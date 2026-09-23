@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Phase 3 live path: G2 PCM → Deepgram → aggregator → router → policy → lens.
+"""Phase 3 live path: G2 PCM → Deepgram → aggregator → fix → judge → answer → policy → lens.
 
-Silence-closed turns go to route() (independent ticker; speech_final does
-not close). Router output goes through display_policy before any downlink
-unless --no-policy. Nova-3 uses `keyterm` (not `keywords`). Self utterances
-are sent to route() like Other; speakerRole is logs only. No RAG.
+Silence-closed turns go to the judge (independent ticker; speech_final does
+not close). Default path is two-tier: judge (ROUTER_SYSTEM_PROMPT) then
+answer (ANSWER_SYSTEM_PROMPT) only on should_respond. Judge ``answer`` is
+ignored for display. Deterministic transcript_fix runs before the judge.
+Nova-3 uses `keyterm` (not `keywords`). No RAG.
 """
 
 from __future__ import annotations
@@ -40,7 +41,20 @@ from display_policy import (
     add_policy_args,
     load_policy_settings,
 )
-from router import RouterConfigError, RouterResult, route
+from router import (
+    RouterConfigError,
+    RouterResult,
+    answer as answer_turn,
+    get_answer_model,
+    is_skip_answer,
+    route,
+)
+from transcript_fix import (
+    DEFAULT_FIX_SIMILARITY,
+    TermEntry,
+    apply_fix,
+    load_term_entries,
+)
 from settings import DEFAULT_AGG_MAX_TURN_MS, DEFAULT_AGG_SILENCE_MS
 from stream import (
     DEEPGRAM_HANDSHAKE_TIMEOUT_S,
@@ -69,6 +83,7 @@ DEFAULT_WEARER_NOTE = "佩戴者是软件工程师，当前对话为 IT 技术�
 DEFAULT_ROUTER_TIMEOUT_MS = 3000
 DEFAULT_MIN_ROUTE_CHARS = 3
 DEFAULT_TERMS_PATH = Path(__file__).resolve().parent / "terms_zh.json"
+DEFAULT_ANSWER_TIMEOUT_MS = 4000
 POLICY_ACCEPT_ACTIONS = frozenset({"push", "hint", "preempt"})
 
 
@@ -210,6 +225,42 @@ def policy_enabled_from_args(args: argparse.Namespace) -> bool:
     return True
 
 
+def pick_display_answer(
+    *,
+    two_tier: bool,
+    judge_answer: str,
+    answer_text: str | None,
+    answer_timed_out: bool,
+) -> tuple[str | None, str | None]:
+    """Choose lens text. Two-tier ignores judge.answer. SKIP / timeout drop."""
+    if two_tier:
+        if answer_timed_out:
+            return None, "answer_timeout"
+        if answer_text is None:
+            return None, "answer_error"
+        if is_skip_answer(answer_text):
+            return None, "answer_skip"
+        return answer_text.strip(), None
+    text = (judge_answer or "").strip()
+    if not text:
+        return None, "none"
+    return text, None
+
+
+def _fix_record(
+    original: str,
+    fixed: str,
+    hits: Sequence[Any],
+    enabled: bool,
+) -> dict[str, Any]:
+    return {
+        "enabled": enabled,
+        "original": original,
+        "fixed": fixed,
+        "corrections": [h.to_dict() if hasattr(h, "to_dict") else h for h in hits],
+    }
+
+
 def apply_trigger_policy(
     policy: DisplayPolicy | None,
     answer: str,
@@ -291,22 +342,17 @@ def policy_audit(
     }
 
 
-def route_with_timeout(
-    payload: dict[str, object],
-    timeout_s: float,
-) -> tuple[RouterResult | None, bool]:
-    """Call route() once. On timeout return (None, True). No retry."""
-    box: list[RouterResult | BaseException] = []
+def call_with_timeout(fn: Any, timeout_s: float, name: str) -> tuple[Any, bool]:
+    """Run fn() in a daemon thread. On timeout return (None, True). No retry."""
+    box: list[Any] = []
 
     def work() -> None:
         try:
-            box.append(route(payload))
-        except RouterConfigError as exc:
-            box.append(exc)
-        except Exception as exc:
+            box.append(fn())
+        except BaseException as exc:
             box.append(exc)
 
-    worker = threading.Thread(target=work, name="live-route", daemon=True)
+    worker = threading.Thread(target=work, name=name, daemon=True)
     worker.start()
     worker.join(timeout_s)
     if worker.is_alive():
@@ -316,7 +362,38 @@ def route_with_timeout(
     item = box[0]
     if isinstance(item, RouterConfigError):
         raise item
+    if isinstance(item, BaseException):
+        return None, False
+    return item, False
+
+
+def route_with_timeout(
+    payload: dict[str, object],
+    timeout_s: float,
+) -> tuple[RouterResult | None, bool]:
+    """Call route() once. On timeout return (None, True). No retry."""
+    item, timed_out = call_with_timeout(lambda: route(payload), timeout_s, "live-judge")
+    if timed_out:
+        return None, True
     if isinstance(item, RouterResult):
+        return item, False
+    return None, False
+
+
+def answer_with_timeout(
+    payload: dict[str, object],
+    kind: str,
+    timeout_s: float,
+) -> tuple[str | None, bool]:
+    """Answer tier. On timeout return (None, True). No retry."""
+    item, timed_out = call_with_timeout(
+        lambda: answer_turn(payload, kind=kind)[0],
+        timeout_s,
+        "live-answer",
+    )
+    if timed_out:
+        return None, True
+    if isinstance(item, str):
         return item, False
     return None, False
 
@@ -351,6 +428,12 @@ class LiveSettings:
         terms_path: Path | None,
         policy_enabled: bool,
         policy: PolicySettings,
+        two_tier: bool,
+        answer_timeout_ms: int,
+        answer_model: str,
+        fix_enabled: bool,
+        fix_similarity: float,
+        fix_entries: list[TermEntry],
     ) -> None:
         self.host = host
         self.port = port
@@ -367,6 +450,12 @@ class LiveSettings:
         self.terms_path = terms_path
         self.policy_enabled = policy_enabled
         self.policy = policy
+        self.two_tier = two_tier
+        self.answer_timeout_ms = answer_timeout_ms
+        self.answer_model = answer_model
+        self.fix_enabled = fix_enabled
+        self.fix_similarity = fix_similarity
+        self.fix_entries = fix_entries
 
 
 class LiveSession:
@@ -553,7 +642,33 @@ class LiveSession:
         role = self.last_role
         direction = self.last_direction
         speaker = map_speaker_role(role)
-        text = turn.text
+        raw_text = turn.text
+        fix_hits: list[Any] = []
+        fix_ms = 0.0
+        text = raw_text
+        if self.settings.fix_enabled and self.settings.fix_entries:
+            t_fix = time.perf_counter()
+            text, fix_hits = apply_fix(
+                raw_text,
+                self.settings.fix_entries,
+                threshold=self.settings.fix_similarity,
+            )
+            fix_ms = (time.perf_counter() - t_fix) * 1000.0
+            for hit in fix_hits:
+                self._write_record(
+                    {
+                        "kind": "fix",
+                        "ts": datetime.now().isoformat(timespec="milliseconds"),
+                        "session_rel_s": round(self.now_rel(), 3),
+                        **hit.to_dict(),
+                    }
+                )
+                print(
+                    f"{fmt_session_ts(self.now_rel())}   → fix  "
+                    f"{hit.original!r} → {hit.fixed!r}  "
+                    f"term={hit.term}  sim={hit.similarity:.2f}",
+                    flush=True,
+                )
         stamp = fmt_session_ts(rel)
         print(
             f"{stamp} {display_speaker(role)}  ({turn.segments} segs)  {text}",
@@ -581,6 +696,8 @@ class LiveSession:
                 None,
                 skip_reason="too_short",
                 error=reason,
+                fix=_fix_record(raw_text, text, fix_hits, self.settings.fix_enabled),
+                extra_timings={"fix_ms": round(fix_ms, 1), "judge_ms": 0.0, "answer_ms": None},
             )
             return
 
@@ -618,14 +735,19 @@ class LiveSession:
                 None,
                 skip_reason="router_config",
                 error=str(exc),
+                fix=_fix_record(raw_text, text, fix_hits, self.settings.fix_enabled),
+                extra_timings={"fix_ms": round(fix_ms, 1), "judge_ms": 0.0, "answer_ms": None},
             )
             await self._send_json({"error": str(exc)})
             return
-        router_ms = (time.perf_counter() - t_route) * 1000.0
+        judge_ms = (time.perf_counter() - t_route) * 1000.0
         pushed = False
         t_down: float | None = None
         skip_reason: str | None = None
         policy_rec: dict[str, Any] | None = None
+        answer_rec: dict[str, Any] | None = None
+        answer_ms: float | None = None
+        display_src = ""
         if timed_out:
             skip_reason = "router_timeout"
             print(
@@ -639,43 +761,121 @@ class LiveSession:
                 f"{fmt_session_ts(self.now_rel())}   → skip  reason: router error",
                 flush=True,
             )
-        elif result.should_respond and result.answer:
+        elif result.should_respond:
             print(
                 f"{fmt_session_ts(self.now_rel())}   → {Fore.GREEN}TRIGGER{Style.RESET_ALL}  "
-                f"conf={result.confidence:.2f}  lat={router_ms:.0f}ms",
+                f"conf={result.confidence:.2f}  judge_ms={judge_ms:.0f}",
                 flush=True,
             )
-            print(
-                f"{fmt_session_ts(self.now_rel())}     {result.answer}",
-                flush=True,
-            )
-            allowed, display, policy_rec = apply_trigger_policy(
-                self.policy_engine,
-                result.answer,
-                result.confidence,
-                result.kind,
-            )
-            if self._ttl_deadline_ms is not None and policy_rec is not None:
-                policy_rec["ttl_deadline_ms"] = self._ttl_deadline_ms
-            if not allowed:
-                skip_reason = f"policy_{policy_rec.get('reason', 'drop')}"
+            if self.settings.two_tier:
                 print(
-                    f"{fmt_session_ts(self.now_rel())}   → skip  policy  "
-                    f"reason={policy_rec.get('reason')}  "
-                    f"budget_used={policy_rec.get('budget_used')}/{policy_rec.get('budget_max')}",
+                    f"{fmt_session_ts(self.now_rel())}     judge.answer ignored  "
+                    f"kind={result.kind}",
                     flush=True,
                 )
+                t_ans = time.perf_counter()
+                try:
+                    ans_text, ans_to = await self.loop.run_in_executor(
+                        None,
+                        lambda: self._answer_once(
+                            payload,
+                            result.kind,
+                            self.settings.answer_timeout_ms / 1000.0,
+                        ),
+                    )
+                except RouterConfigError as exc:
+                    skip_reason = "router_config"
+                    print(f"{stamp}   → skip  answer config: {exc}", flush=True)
+                    ans_text, ans_to = None, False
+                answer_ms = (time.perf_counter() - t_ans) * 1000.0
+                if ans_to:
+                    skip_reason = "answer_timeout"
+                    print(
+                        f"{fmt_session_ts(self.now_rel())}   → skip  reason: "
+                        f"answer_timeout  waited={self.settings.answer_timeout_ms}ms  "
+                        f"model={self.settings.answer_model}",
+                        flush=True,
+                    )
+                    answer_rec = {
+                        "text": None,
+                        "skip": False,
+                        "timeout": True,
+                        "model": self.settings.answer_model,
+                    }
+                elif ans_text is None:
+                    skip_reason = skip_reason or "answer_error"
+                    print(
+                        f"{fmt_session_ts(self.now_rel())}   → skip  reason: answer error",
+                        flush=True,
+                    )
+                    answer_rec = {
+                        "text": None,
+                        "skip": False,
+                        "timeout": False,
+                        "model": self.settings.answer_model,
+                    }
+                elif is_skip_answer(ans_text):
+                    skip_reason = "answer_skip"
+                    print(
+                        f"{fmt_session_ts(self.now_rel())}   → skip  reason: answer SKIP  "
+                        f"answer_ms={answer_ms:.0f}",
+                        flush=True,
+                    )
+                    answer_rec = {
+                        "text": "SKIP",
+                        "skip": True,
+                        "timeout": False,
+                        "model": self.settings.answer_model,
+                    }
+                else:
+                    display_src = ans_text.strip()
+                    answer_rec = {
+                        "text": display_src,
+                        "skip": False,
+                        "timeout": False,
+                        "model": self.settings.answer_model,
+                    }
             else:
+                display_src = (result.answer or "").strip()
+                if not display_src:
+                    skip_reason = "none"
+                    print(
+                        f"{fmt_session_ts(self.now_rel())}   → skip  "
+                        f"single-shot empty judge answer",
+                        flush=True,
+                    )
+            if display_src:
                 print(
-                    f"{fmt_session_ts(self.now_rel())}   → policy  "
-                    f"action={policy_rec.get('action')}  mode={policy_rec.get('mode')}  "
-                    f"ttl={self.settings.policy.ttl_ms}ms",
+                    f"{fmt_session_ts(self.now_rel())}     {display_src}",
                     flush=True,
                 )
-                t_down = time.perf_counter()
-                await self._send_json({"text": display})
-                t_down = (time.perf_counter() - t_down) * 1000.0
-                pushed = True
+                allowed, display, policy_rec = apply_trigger_policy(
+                    self.policy_engine,
+                    display_src,
+                    result.confidence,
+                    result.kind,
+                )
+                if self._ttl_deadline_ms is not None and policy_rec is not None:
+                    policy_rec["ttl_deadline_ms"] = self._ttl_deadline_ms
+                if not allowed:
+                    skip_reason = f"policy_{policy_rec.get('reason', 'drop')}"
+                    print(
+                        f"{fmt_session_ts(self.now_rel())}   → skip  policy  "
+                        f"reason={policy_rec.get('reason')}  "
+                        f"budget_used={policy_rec.get('budget_used')}/{policy_rec.get('budget_max')}",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"{fmt_session_ts(self.now_rel())}   → policy  "
+                        f"action={policy_rec.get('action')}  mode={policy_rec.get('mode')}  "
+                        f"ttl={self.settings.policy.ttl_ms}ms",
+                        flush=True,
+                    )
+                    t_down = time.perf_counter()
+                    await self._send_json({"text": display})
+                    t_down = (time.perf_counter() - t_down) * 1000.0
+                    pushed = True
         else:
             skip_reason = "none"
             reason = result.reason if result is not None else "none"
@@ -699,6 +899,14 @@ class LiveSession:
             t_down,
             skip_reason=skip_reason,
             policy=policy_rec,
+            fix=_fix_record(raw_text, text, fix_hits, self.settings.fix_enabled),
+            answer=answer_rec,
+            extra_timings={
+                "fix_ms": round(fix_ms, 1),
+                "judge_ms": round(judge_ms, 1),
+                "answer_ms": None if answer_ms is None else round(answer_ms, 1),
+                "router_ms": round(judge_ms, 1),
+            },
         )
 
     def _route_once(
@@ -706,6 +914,12 @@ class LiveSession:
     ) -> tuple[RouterResult | None, bool]:
         with self.route_lock:
             return route_with_timeout(payload, timeout_s)
+
+    def _answer_once(
+        self, payload: dict[str, object], kind: str, timeout_s: float
+    ) -> tuple[str | None, bool]:
+        with self.route_lock:
+            return answer_with_timeout(payload, kind, timeout_s)
 
     def _write_record(self, record: dict[str, Any]) -> None:
         with self.jsonl_lock:
@@ -728,12 +942,15 @@ class LiveSession:
         skip_reason: str | None = None,
         error: str | None = None,
         policy: dict[str, Any] | None = None,
+        fix: dict[str, Any] | None = None,
+        answer: dict[str, Any] | None = None,
+        extra_timings: dict[str, Any] | None = None,
     ) -> None:
         record: dict[str, Any] = {
             "kind": "turn",
             "ts": datetime.now().isoformat(timespec="milliseconds"),
             "session_rel_s": round(self.now_rel(), 3),
-            "transcript": turn.text,
+            "transcript": (fix or {}).get("fixed", turn.text) if fix else turn.text,
             "aggregated_text": turn.text,
             "raw_finals": [r.get("transcript") for r in raws],
             "raw_final_records": raws,
@@ -750,13 +967,21 @@ class LiveSession:
                 "downlink_ms": None if downlink_ms is None else round(downlink_ms, 1),
                 "total_ms": round((time.perf_counter() - t0) * 1000.0, 1),
             },
+            "two_tier": self.settings.two_tier,
+            "judge_answer_ignored": bool(self.settings.two_tier),
         }
+        if extra_timings:
+            record["timings"].update(extra_timings)
         if skip_reason:
             record["skip_reason"] = skip_reason
         if error:
             record["error"] = error
         if policy is not None:
             record["policy"] = policy
+        if fix is not None:
+            record["fix"] = fix
+        if answer is not None:
+            record["answer"] = answer
         self._write_record(record)
 
     async def _send_json(self, obj: dict[str, Any]) -> None:
@@ -857,6 +1082,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="bypass display_policy; router trigger pushes as before (A/B)",
     )
+    p.add_argument(
+        "--no-fix",
+        action="store_true",
+        help="bypass deterministic transcript_fix (A/B)",
+    )
+    p.add_argument(
+        "--fix-similarity",
+        type=float,
+        default=None,
+        help=f"fuzzy match threshold (default {DEFAULT_FIX_SIMILARITY}; env FIX_SIMILARITY)",
+    )
+    p.add_argument(
+        "--single-shot",
+        action="store_true",
+        help="A/B: one judge call only; use judge answer for display (LIVE_TWO_TIER=0)",
+    )
+    p.add_argument(
+        "--answer-timeout-ms",
+        type=int,
+        default=None,
+        help=f"abandon answer() after this many ms (default {DEFAULT_ANSWER_TIMEOUT_MS})",
+    )
     add_policy_args(p)
     p.add_argument("--log", default=None, help="jsonl path (default live_YYYYmmdd_HHMMSS.jsonl)")
     return p.parse_args(argv)
@@ -908,6 +1155,37 @@ def build_settings(args: argparse.Namespace) -> LiveSettings:
         cli=args,
         config_path=Path(cfg) if cfg else None,
     )
+    two_tier = True
+    if getattr(args, "single_shot", False):
+        two_tier = False
+    else:
+        raw_tier = _env("LIVE_TWO_TIER", "1").strip().lower()
+        if raw_tier in {"0", "false", "no", "off"}:
+            two_tier = False
+    answer_timeout = (
+        args.answer_timeout_ms
+        if getattr(args, "answer_timeout_ms", None) is not None
+        else int(_env("ANSWER_TIMEOUT_MS", str(DEFAULT_ANSWER_TIMEOUT_MS)))
+    )
+    try:
+        answer_model = get_answer_model()
+    except RouterConfigError:
+        answer_model = _env("ANSWER_MODEL", "") or _env("ROUTER_MODEL", "")
+    fix_on = not getattr(args, "no_fix", False)
+    if fix_on:
+        raw_fix = _env("LIVE_NO_FIX", "").strip().lower()
+        if raw_fix in {"1", "true", "yes", "on"}:
+            fix_on = False
+    fix_sim = (
+        args.fix_similarity
+        if getattr(args, "fix_similarity", None) is not None
+        else float(_env("FIX_SIMILARITY", str(DEFAULT_FIX_SIMILARITY)))
+    )
+    fix_entries: list[TermEntry] = []
+    if terms_path is not None and terms_path.is_file():
+        fix_entries = load_term_entries(terms_path)
+    elif DEFAULT_TERMS_PATH.is_file():
+        fix_entries = load_term_entries(DEFAULT_TERMS_PATH)
     return LiveSettings(
         host=host,
         port=port,
@@ -923,6 +1201,12 @@ def build_settings(args: argparse.Namespace) -> LiveSettings:
         terms_path=terms_path,
         policy_enabled=policy_on,
         policy=policy,
+        two_tier=two_tier,
+        answer_timeout_ms=answer_timeout,
+        answer_model=answer_model,
+        fix_enabled=fix_on,
+        fix_similarity=fix_sim,
+        fix_entries=fix_entries,
     )
 
 
@@ -957,6 +1241,24 @@ def log_startup(settings: LiveSettings) -> None:
         )
     else:
         print("policy=off  (--no-policy / LIVE_NO_POLICY)", flush=True)
+    if settings.two_tier:
+        print(
+            f"two_tier=on  judge={_env('ROUTER_MODEL', '(ROUTER_MODEL)')}  "
+            f"answer={settings.answer_model or '(same as ROUTER_MODEL)'}  "
+            f"answer_timeout_ms={settings.answer_timeout_ms}  "
+            f"(unset ANSWER_MODEL → same id as ROUTER_MODEL; judge.answer ignored)",
+            flush=True,
+        )
+    else:
+        print("two_tier=off  (--single-shot / LIVE_TWO_TIER=0); judge answer used", flush=True)
+    if settings.fix_enabled:
+        print(
+            f"fix=on  similarity={settings.fix_similarity}  "
+            f"entries={len(settings.fix_entries)}",
+            flush=True,
+        )
+    else:
+        print("fix=off  (--no-fix / LIVE_NO_FIX)", flush=True)
     print(f"wearer_note={settings.wearer_note!r}", flush=True)
     print(f"jsonl={settings.log_path}", flush=True)
     print("Connect glasses/app, then speak. Ctrl-C to stop.\n", flush=True)

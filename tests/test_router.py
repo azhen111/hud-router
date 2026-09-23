@@ -8,11 +8,14 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from evaluate import CaseResult, TestCase, render_report
-from prompts import ROUTER_SYSTEM_PROMPT
+from prompts import ANSWER_SYSTEM_PROMPT, ROUTER_SYSTEM_PROMPT
 from router import (
     MAX_ANSWER_CHARS,
+    answer,
     build_client,
     complete_chat,
+    get_answer_model,
+    is_skip_answer,
     normalize_result,
     route,
 )
@@ -239,6 +242,21 @@ class TestPromptAppend(unittest.TestCase):
         self.assertIn("Judge SELF the same", ROUTER_SYSTEM_PROMPT)
         self.assertIn("Do not suppress a trigger just because the last", ROUTER_SYSTEM_PROMPT)
 
+    def test_answer_prompt_verbatim_and_router_untouched(self) -> None:
+        expected = (
+            "You write one-glance answers for a heads-up display worn during a\n"
+            "live conversation. The wearer is a software engineer; the conversation\n"
+            "is a technical discussion. Resolve technical acronyms and terms in\n"
+            "that context — RAG means retrieval-augmented generation, not a\n"
+            "red/amber/green status; SLA, JWT, Pod and similar terms take their\n"
+            "software-engineering sense."
+        )
+        self.assertTrue(ANSWER_SYSTEM_PROMPT.startswith(expected))
+        self.assertIn("output exactly: SKIP", ANSWER_SYSTEM_PROMPT)
+        self.assertIn("Output the answer text only. No JSON, no markdown, no commentary.", ANSWER_SYSTEM_PROMPT)
+        self.assertNotIn("ANSWER_SYSTEM_PROMPT", ROUTER_SYSTEM_PROMPT)
+        self.assertIn("Never answer with a question. If you would have to ask the speaker", ROUTER_SYSTEM_PROMPT)
+
 
 class TestSelfCallsRoute(unittest.TestCase):
     def test_self_last_speaker_invokes_model(self) -> None:
@@ -272,6 +290,87 @@ class TestSelfCallsRoute(unittest.TestCase):
         self.assertTrue(result.should_respond)
         self.assertEqual(result.kind, "term")
         self.assertNotIn("last speaker is SELF", result.reason)
+
+
+class TestAnswerTier(unittest.TestCase):
+    def test_judge_answer_not_used_by_answer_helper(self) -> None:
+        def fake_complete(messages: list[dict[str, str]]) -> str:
+            self.assertEqual(messages[0]["content"], ANSWER_SYSTEM_PROMPT)
+            self.assertIn("<judge_kind>term</judge_kind>", messages[1]["content"])
+            self.assertIn("JWT 是什么", messages[1]["content"])
+            return "JWT：JSON Web Token"
+
+        text, timing = answer(
+            {
+                "recent_turns": [
+                    {"speaker": "OTHER", "text": "JWT 是什么", "ts": 1}
+                ],
+                "locale": "zh",
+            },
+            kind="term",
+            completion_fn=fake_complete,
+        )
+        self.assertEqual(text, "JWT：JSON Web Token")
+        self.assertIsNone(timing)
+        self.assertFalse(is_skip_answer(text))
+
+    def test_skip_is_exact_trim(self) -> None:
+        self.assertTrue(is_skip_answer("SKIP"))
+        self.assertTrue(is_skip_answer("  SKIP  "))
+        self.assertFalse(is_skip_answer("skip"))
+        self.assertFalse(is_skip_answer("SKIP now"))
+
+        def fake_complete(_messages: list[dict[str, str]]) -> str:
+            return "SKIP"
+
+        text, _ = answer(
+            {"recent_turns": [{"speaker": "OTHER", "text": "那是啥", "ts": 1}], "locale": "zh"},
+            kind="answer",
+            completion_fn=fake_complete,
+        )
+        self.assertTrue(is_skip_answer(text))
+
+    def test_unset_answer_model_equals_router(self) -> None:
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "k", "ROUTER_MODEL": "gpt-4o-mini"}, clear=False):
+            os_env_pop = "ANSWER_MODEL"
+            old = __import__("os").environ.pop(os_env_pop, None)
+            try:
+                self.assertEqual(get_answer_model(), "gpt-4o-mini")
+            finally:
+                if old is not None:
+                    __import__("os").environ[os_env_pop] = old
+
+    def test_complete_chat_plain_text_skips_json_mode(self) -> None:
+        text, _timing = complete_chat(
+            _FakePlainClient(),
+            [{"role": "user", "content": "hi"}],
+            "dummy-model",
+            json_mode=False,
+        )
+        self.assertEqual(text, "plain")
+
+
+class _FakePlainClient:
+    def __init__(self) -> None:
+        self.n = 0
+
+    def with_options(self, **_kwargs: object) -> "_FakePlainClient":
+        return self
+
+    @property
+    def chat(self) -> SimpleNamespace:
+        outer = self
+
+        class _C:
+            def create(self, **kwargs: object) -> SimpleNamespace:
+                outer.n += 1
+                if "response_format" in kwargs:
+                    raise AssertionError("answer tier must not request json_object")
+                return SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(content="plain"))]
+                )
+
+        return SimpleNamespace(completions=_C())
 
 
 if __name__ == "__main__":

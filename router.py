@@ -13,7 +13,13 @@ from typing import Any, Final, Literal, TypedDict, cast
 
 from openai import OpenAI
 
-from prompts import ROUTER_SYSTEM_PROMPT, assemble_user_message, normalize_speaker
+from prompts import (
+    ANSWER_SYSTEM_PROMPT,
+    ROUTER_SYSTEM_PROMPT,
+    assemble_answer_user_message,
+    assemble_user_message,
+    normalize_speaker,
+)
 
 MAX_TURNS: Final[int] = 6
 MAX_ANSWER_CHARS: Final[int] = 56  # full-width = 1 (Unicode code points); two G2 lines
@@ -400,17 +406,29 @@ def _one_completion(client: OpenAI, kwargs: dict[str, Any]) -> tuple[Any, float 
     return completions.create(**kwargs), None
 
 
+def get_answer_model() -> str:
+    """ANSWER_MODEL if set, otherwise the same id as ROUTER_MODEL."""
+    load_dotenv()
+    override: str = os.environ.get("ANSWER_MODEL", "").strip()
+    if override:
+        return override
+    _key, _base, model = get_settings()
+    return model
+
+
 def complete_chat(
     client: OpenAI,
     messages: list[dict[str, str]],
     model: str,
+    *,
+    json_mode: bool = True,
 ) -> tuple[str, CallTiming]:
     """One chat completion. Prefer JSON mode; fall back if unsupported.
 
     Raises on transport/API failure so `route()` can degrade. Timeout and
     HTTP errors are not retried (SDK max_retries forced to 0). The extra
     JSON-mode fallback is only when the endpoint rejects response_format,
-    not on timeout.
+    not on timeout. Answer-tier calls pass ``json_mode=False`` (plain text).
     """
     common: dict[str, Any] = {
         "model": model,
@@ -423,15 +441,19 @@ def complete_chat(
     ttfb_s: float | None = None
     try:
         try:
-            response, ttfb_s = _one_completion(
-                client, {**common, "response_format": {"type": "json_object"}}
-            )
+            if json_mode:
+                response, ttfb_s = _one_completion(
+                    client, {**common, "response_format": {"type": "json_object"}}
+                )
+            else:
+                response, ttfb_s = _one_completion(client, common)
         except TypeError:
             response, ttfb_s = _one_completion(client, common)
         except Exception as exc:
-            if not _json_mode_unsupported(exc):
+            if json_mode and _json_mode_unsupported(exc):
+                response, ttfb_s = _one_completion(client, common)
+            else:
                 raise
-            response, ttfb_s = _one_completion(client, common)
         content: str | None = None
         try:
             content = response.choices[0].message.content
@@ -506,6 +528,46 @@ def route(
     return parsed
 
 
+def is_skip_answer(text: str) -> bool:
+    """Answer-tier exact SKIP (after strip) means no trigger."""
+    return text.strip() == "SKIP"
+
+
+def answer(
+    payload: Mapping[str, Any],
+    *,
+    kind: str = "answer",
+    client: OpenAI | None = None,
+    completion_fn: Callable[[list[dict[str, str]]], str] | None = None,
+) -> tuple[str, CallTiming | None]:
+    """Answer-tier: plain-text HUD line. Judge JSON ``answer`` is not used.
+
+    Call only when the judge returned ``should_respond=true``. Output is
+    the model text as-is (caller treats strip==SKIP as no trigger).
+    """
+    turns: list[Turn] = window_turns(payload)
+    locale: str = str(payload.get("locale") or "ja")
+    wearer_note_raw: object = payload.get("wearer_note")
+    wearer_note: str | None
+    if wearer_note_raw is None or str(wearer_note_raw).strip() == "":
+        wearer_note = None
+    else:
+        wearer_note = str(wearer_note_raw)
+    user_message: str = assemble_answer_user_message(
+        turns, locale, kind, wearer_note
+    )
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
+        {"role": "user", "content": user_message},
+    ]
+    if completion_fn is not None:
+        return str(completion_fn(messages) or ""), None
+    active: OpenAI = client if client is not None else build_client()
+    model: str = get_answer_model()
+    raw_text, timing = complete_chat(active, messages, model, json_mode=False)
+    return raw_text, timing
+
+
 def result_json(result: RouterResult) -> str:
     """Serialize the public contract as compact JSON."""
     return json.dumps(result.to_dict(), ensure_ascii=False, separators=(",", ":"))
@@ -523,11 +585,14 @@ __all__ = [
     "Speaker",
     "Turn",
     "answer_char_len",
+    "answer",
     "build_client",
     "complete_chat",
     "degrade",
     "extract_json_object",
+    "get_answer_model",
     "get_settings",
+    "is_skip_answer",
     "load_dotenv",
     "normalize_result",
     "parse_model_output",

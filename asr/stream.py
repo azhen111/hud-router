@@ -422,18 +422,29 @@ def load_keyterms(path: Path) -> list[str]:
     terms: list[str] = []
     seen: set[str] = set()
     for item in items:
-        term: str = str(item).strip()
-        if not term or term.startswith("#"):
-            continue
-        # Drop legacy keywords intensifiers (term:1.5). keyterm is plain only.
-        if ":" in term:
-            maybe_w = term.rsplit(":", 1)[-1].lstrip("+-")
-            if maybe_w.replace(".", "", 1).isdigit():
+        pieces: list[str]
+        if isinstance(item, dict):
+            canon = str(item.get("term") or "").strip()
+            variants = [
+                str(v).strip()
+                for v in (item.get("variants") or [])
+                if str(v).strip()
+            ]
+            pieces = ([canon] if canon else []) + variants
+        else:
+            pieces = [str(item).strip()]
+        for term in pieces:
+            if not term or term.startswith("#"):
                 continue
-        if term in seen:
-            continue
-        seen.add(term)
-        terms.append(term)
+            # Drop legacy keywords intensifiers (term:1.5). keyterm is plain only.
+            if ":" in term:
+                maybe_w = term.rsplit(":", 1)[-1].lstrip("+-")
+                if maybe_w.replace(".", "", 1).isdigit():
+                    continue
+            if term in seen:
+                continue
+            seen.add(term)
+            terms.append(term)
     return terms
 
 

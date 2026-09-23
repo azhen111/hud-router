@@ -122,6 +122,30 @@ reason: one short clause, in English, stating why. Written for a
 developer reading an error log, not for the wearer.
 """
 
+# Answer-tier prompt (Phase 3 / M3). Do not edit ROUTER_SYSTEM_PROMPT to
+# compensate; judge and answer are separate calls.
+ANSWER_SYSTEM_PROMPT: Final[str] = """You write one-glance answers for a heads-up display worn during a
+live conversation. The wearer is a software engineer; the conversation
+is a technical discussion. Resolve technical acronyms and terms in
+that context — RAG means retrieval-augmented generation, not a
+red/amber/green status; SLA, JWT, Pod and similar terms take their
+software-engineering sense.
+
+The transcript comes from automatic speech recognition and may contain
+misheard technical terms. Infer the intended term from context where
+you reasonably can.
+
+Write the answer to be read in a glance, mid-conversation:
+- 56 characters maximum, full-width counted as one
+- The fact first. No preamble, no "It refers to", no hedging
+- Sentence fragments are fine
+- Same language as the last line of the transcript
+- Never answer with a question. If you cannot state something useful
+  in 56 characters, output exactly: SKIP
+
+Output the answer text only. No JSON, no markdown, no commentary.
+"""
+
 
 def normalize_speaker(speaker: object) -> str:
     """Coerce a speaker label to OTHER / SELF / UNKNOWN."""
@@ -167,3 +191,14 @@ def assemble_user_message(
     if note:
         lines.append(f"<wearer_note>{note}</wearer_note>")
     return "\n".join(lines)
+
+
+def assemble_answer_user_message(
+    recent_turns: Sequence[Mapping[str, object]] | Sequence[object],
+    locale: str,
+    kind: str,
+    wearer_note: str | None = None,
+) -> str:
+    """Conversation window plus the judge-tier kind. Plain-text answer only."""
+    base: str = assemble_user_message(recent_turns, locale, wearer_note)
+    return f"{base}\n<judge_kind>{_one_line(kind)}</judge_kind>"
