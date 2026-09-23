@@ -132,7 +132,8 @@ python server/live.py --lang multi --log live_multi.jsonl
 ### jsonl
 
 - `kind=final`：Deepgram 一条 is_final（含 `speech_final`）。
-- `kind=turn`：aggregator 关窗后的一句：`aggregated_text`、`raw_finals`、`speakerRole`、`direction`、完整 `router`、`timings`、`skip_reason`、**`policy`**。
+- `kind=fix`：一条确定性纠正（`original` / `fixed` / `term` / `similarity`）。
+- `kind=turn`：`aggregated_text`、`fix`、`router`（judge JSON，其中 `answer` 仅供对照）、`answer`（明文或 SKIP）、`timings.judge_ms` / `answer_ms`、`skip_reason`、`policy`。
 - `kind=policy_clear`：TTL 到期推 `・`，不依赖下一条候选。
 
 `policy`（router 触发后，或 `--no-policy` 本会走到策略时）字段：
