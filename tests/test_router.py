@@ -16,6 +16,7 @@ from router import (
     answer,
     assess_hud_quality,
     build_client,
+    scaffold_labels_in,
     complete_chat,
     get_answer_model,
     interrogative_clauses,
@@ -261,11 +262,19 @@ class TestPromptAppend(unittest.TestCase):
         self.assertIn("240 characters maximum", ANSWER_SYSTEM_PROMPT)
         self.assertIn("Cover the actual ask end-to-end", ANSWER_SYSTEM_PROMPT)
         self.assertIn("Fill the screen", ANSWER_SYSTEM_PROMPT)
+        self.assertIn("say aloud", ANSWER_SYSTEM_PROMPT)
+        self.assertIn("Forbid labels and outline chrome", ANSWER_SYSTEM_PROMPT)
+        self.assertIn("关键点", ANSWER_SYSTEM_PROMPT)
+        self.assertIn("常见误区", ANSWER_SYSTEM_PROMPT)
         self.assertIn("如何评估", ANSWER_SYSTEM_PROMPT)
         self.assertIn("hit@k", ANSWER_SYSTEM_PROMPT)
         self.assertIn("recall@k", ANSWER_SYSTEM_PROMPT)
         self.assertIn('"hud": "..."', ANSWER_SYSTEM_PROMPT)
         self.assertIn('"detail":', ANSWER_SYSTEM_PROMPT)
+        self.assertNotIn(
+            "200-300字完整解释：定义、关键点、评测方法",
+            ANSWER_SYSTEM_PROMPT,
+        )
         self.assertNotIn("When in doubt, prefer to respond.", ROUTER_SYSTEM_PROMPT)
         self.assertEqual(PERMISSIVE_JUDGE_APPEND, "When in doubt, prefer to respond.")
         self.assertIn("Never answer with a question. If you would have to ask the speaker", ROUTER_SYSTEM_PROMPT)
@@ -496,6 +505,34 @@ class TestAnswerTier(unittest.TestCase):
         stats = assess_hud_quality(hud, q)
         self.assertEqual(stats["warnings"], [])
         self.assertEqual(interrogative_clauses(q)[0][0], "什么")
+
+    def test_mysql_session_scaffold_not_speakable(self) -> None:
+        # Real session: outline chrome the wearer cannot say aloud.
+        chrome = (
+            "MySQL数据类型包括：\n"
+            "整型、浮点型、\n"
+            "字符串、日期时间。\n"
+            "关键点：选择合适\n"
+            "的数据类型可提高\n"
+            "性能和存储效率。\n"
+            "常见误区：不应\n"
+            "随意使用TEXT类型，\n"
+            "应优先考虑VARCHAR。"
+        )
+        self.assertIn("关键点", scaffold_labels_in(chrome))
+        self.assertIn("常见误区", scaffold_labels_in(chrome))
+        stats = assess_hud_quality(chrome, "MySQL中的数据类型有哪些")
+        self.assertIn("scaffold_labels", stats["warnings"])
+
+        spoken = (
+            "MySQL常见类型有整型、浮点型、字符串和日期时间。\n"
+            "字符串优先 VARCHAR，少用 TEXT，能省空间也更快。"
+        )
+        self.assertEqual(scaffold_labels_in(spoken), [])
+        self.assertNotIn(
+            "scaffold_labels",
+            assess_hud_quality(spoken, "MySQL中的数据类型有哪些")["warnings"],
+        )
 
     def test_parse_answer_attaches_quality_from_question(self) -> None:
         hud = "\n".join(["召回率是", "检索相关", "文档比例", "常见误区", "混淆精确率"])

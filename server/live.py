@@ -959,17 +959,21 @@ class LiveSession:
                                 0.0,
                                 avg_line_len=quality.get("avg_line_len"),
                                 omitted=list(quality.get("omitted") or []),
+                                scaffold=list(quality.get("scaffold") or []),
                                 warnings=warnings,
                             )
                         )
                         omitted = ",".join(
                             str(x) for x in (quality.get("omitted") or [])
                         )
+                        scaffold = ",".join(
+                            str(x) for x in (quality.get("scaffold") or [])
+                        )
                         print(
                             f"{fmt_session_ts(self.now_rel())}   → warn  "
                             f"hud_quality  {','.join(warnings)}  "
                             f"avg_line_len={quality.get('avg_line_len')}  "
-                            f"omitted={omitted}",
+                            f"omitted={omitted}  scaffold={scaffold}",
                             flush=True,
                         )
                     answer_rec = {

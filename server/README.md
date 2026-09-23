@@ -4,7 +4,7 @@
 
 `server/live.py`：眼镜 PCM 上行 → Deepgram nova-3（`keyterm`）→ aggregator → **`transcript_fix`（默认开，只改表内 variants）** → **judge** → **answer**（JSON `hud`+`detail`）→ 默认 **policy 关** → 下行 `{"text": hud, "detail": ..., "question": ...}`。空 hud 只上手机列表，不上镜。`--policy` 才走策略（`max_chars=240`，`ttl=25000`）。
 
-**两级默认开。** 未配置 `ANSWER_MODEL` 时两级用同一个 `ROUTER_MODEL`。Judge 的 `answer` **不上镜**。`--single-shot` / `LIVE_TWO_TIER=0` 恢复单次 judge。`--permissive` 只在运行时给 judge 追加 `When in doubt, prefer to respond.`（不改 `ROUTER_SYSTEM_PROMPT` 源文）。每层 `layers[]`（pass/block/reason/ms）打终端和 jsonl。Answer 的 `hud` 必须答完提问（「怎么样」+「如何评估」要同时写定义和评测，例如标注集 hit@k / recall@k、人工抽检），并尽量填满每行 28 全角，避免一串 8–12 字短行浪费 10×28。行均长过短或漏掉第二问句时，`layers` 记 `hud_quality` 警告（**不拦截**）。
+**两级默认开。** 未配置 `ANSWER_MODEL` 时两级用同一个 `ROUTER_MODEL`。Judge 的 `answer` **不上镜**。`--single-shot` / `LIVE_TWO_TIER=0` 恢复单次 judge。`--permissive` 只在运行时给 judge 追加 `When in doubt, prefer to respond.`（不改 `ROUTER_SYSTEM_PROMPT` 源文）。每层 `layers[]`（pass/block/reason/ms）打终端和 jsonl。Answer 的 `hud` 必须是佩戴者能直接说出口的连续句子（不要「关键点：」「常见误区：」等小标题），并答完提问（「怎么样」+「如何评估」要同时写清是什么和怎么评，例如标注集 hit@k / recall@k、人工抽检），尽量填满每行 28 全角。行均长过短、漏掉第二问句、或带提纲标签时，`layers` 记 `hud_quality` 警告（**不拦截**）。
 
 **不做：** RAG、LLM 纠错、改 `ROUTER_SYSTEM_PROMPT` / testcases* / display_policy 语义。
 

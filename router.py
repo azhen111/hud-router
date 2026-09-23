@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -808,8 +809,52 @@ def omitted_interrogative_needles(question: str, hud: str) -> list[str]:
     return missing
 
 
+# Outline chrome the wearer cannot say aloud. Colon forms only for 定义/
+# 总结/注意 so "召回率是…" stays clean.
+_SCAFFOLD_LABELS: Final[tuple[str, ...]] = (
+    "关键点",
+    "常见误区",
+    "Tips",
+    "Key point",
+    "Key Point",
+    "Pitfall",
+    "定义：",
+    "定义:",
+    "总结：",
+    "总结:",
+    "注意：",
+    "注意:",
+)
+_NUMBERED_ESSAY = re.compile(
+    r"(?:^|\n)\s*[1-3][\.、\)]\s*\S", re.MULTILINE
+)
+
+
+def scaffold_labels_in(text: str) -> list[str]:
+    """Labels / outline chrome that should not appear on a speakable hud."""
+    raw = str(text or "")
+    if not raw.strip():
+        return []
+    found: list[str] = []
+    folded = raw.casefold()
+    for label in _SCAFFOLD_LABELS:
+        if label.casefold() in folded or label in raw:
+            found.append(label)
+    if len(_NUMBERED_ESSAY.findall(raw)) >= 2:
+        found.append("1.2.3.")
+    # unique, first occurrence wins
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for item in found:
+        key = item.casefold()
+        if key not in seen:
+            seen.add(key)
+            uniq.append(item)
+    return uniq
+
+
 def assess_hud_quality(hud: str, question: str = "") -> dict[str, Any]:
-    """Non-blocking quality flags: short lines / omitted 2nd interrogative.
+    """Non-blocking quality flags: short lines / omitted clause / scaffold.
 
     Never discards hud. Used only for layer-stats warnings.
     """
@@ -824,16 +869,20 @@ def assess_hud_quality(hud: str, question: str = "") -> dict[str, Any]:
     )
     short_lines = n_lines >= HUD_SHORT_LINE_MIN_LINES and avg < HUD_SHORT_LINE_AVG
     omitted = omitted_interrogative_needles(question, hud) if hud.strip() else []
+    scaffold = scaffold_labels_in(hud) if hud.strip() else []
     warnings: list[str] = []
     if short_lines:
         warnings.append("short_lines")
     if omitted:
         warnings.append("omitted_clause")
+    if scaffold:
+        warnings.append("scaffold_labels")
     return {
         "n_lines": n_lines,
         "avg_line_len": round(avg, 1),
         "short_lines": short_lines,
         "omitted": omitted,
+        "scaffold": scaffold,
         "warnings": warnings,
     }
 
@@ -934,6 +983,7 @@ __all__ = [
     "answer_char_len",
     "answer",
     "assess_hud_quality",
+    "scaffold_labels_in",
     "build_client",
     "complete_chat",
     "degrade",

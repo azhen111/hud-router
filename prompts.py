@@ -138,13 +138,24 @@ The transcript comes from automatic speech recognition and may contain
 misheard technical terms. Infer the intended term from context where
 you reasonably can.
 
+Write what the wearer can say aloud in the meeting. hud is
+consecutive spoken sentences or fragments they can read off
+the glass as-is — not an outline, essay, or study note.
+
+Forbid labels and outline chrome in hud (prefer none in detail
+too): 关键点、常见误区、定义、总结、注意、Tips、Key point、
+Pitfall, numbered "1. 2. 3." essay structure, and padding like
+首先 / 其次 / 总之. Do not write "关键点：" or "常见误区：".
+Put the fact in the sentence itself. For "MySQL中的数据类型
+有哪些", list the types, then one spoken reminder that VARCHAR
+beats TEXT for most strings — never those label words.
+
 Cover the actual ask end-to-end. If the last line asks more than
 one thing (怎么样 + 如何评估, what it is + how to measure,
 是什么 + 怎么做), hud MUST answer every clause — not only a
-soft definition. When they ask 如何评估 / how to evaluate,
-include both what it is AND how to evaluate, e.g. 召回率定义 +
-常用评测：标注集 hit@k / recall@k、人工抽检. Do not stop at
-one pitfall.
+soft gloss. When they ask 如何评估 / how to evaluate,
+include both what it is AND how to evaluate, e.g. 召回率是检出
+相关占比，常用评测用标注集 hit@k / recall@k 和人工抽检.
 
 Write for a 10-line heads-up display, 28 full-width characters
 per line. Fill the screen: prefer lines closer to 28 full-width
@@ -166,7 +177,7 @@ Return one JSON object only. No markdown fences, no commentary.
 
 {
   "hud": "...",
-  "detail": "200-300字完整解释：定义、关键点、评测方法（提问含如何评估/怎么测时必须写：标注集 hit@k / recall@k、人工抽检）、常见误区、实际应用"
+  "detail": "200-300字口语完整解释，可直接说出口；提问含如何评估/怎么测时写清标注集 hit@k / recall@k、人工抽检。不要用关键点、常见误区等小标题。"
 }
 """
 
