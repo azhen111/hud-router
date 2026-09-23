@@ -2,11 +2,11 @@
 
 ## Phase 3 — live 通路（ASR 加固）
 
-`server/live.py`：眼镜 PCM 上行 → Deepgram nova-3（`keyterm`）→ `asr/aggregator.py`（独立静音定时器，默认 1200ms；`speech_final` 不关窗）→ 短句过滤（默认 3 字，命中 keyterm 则豁免）→ `route()` → `{"text": answer}` 下行上镜。
+`server/live.py`：眼镜 PCM 上行 → Deepgram nova-3（`keyterm`）→ `asr/aggregator.py`（独立静音定时器，默认 1200ms；`speech_final` 不关窗）→ 短句过滤（默认 3 字，命中 keyterm 则豁免）→ `route()` → **`display_policy`（默认开）** → `{"text": ...}` 下行上镜。TTL 到期再推占位符 `・`。
 
-**Self 政策：** `speakerRole` / `speaker` 只写 jsonl 和终端。Self 发话**不再**在 `route()` 前丢掉，和 Other 一样进模型。`ROUTER_SYSTEM_PROMPT` 也不再写「SELF 一律不触发」。
+**Self 政策：** `speakerRole` / `speaker` 只写 jsonl 和终端。Self 发话**不再**在 `route()` 前丢掉，和 Other 一样进模型。
 
-**不做：** display_policy、RAG。
+**不做：** RAG、两级模型、Windows 环回采音。`--no-policy` / `LIVE_NO_POLICY=1` 可整段关掉策略做 A/B。
 
 **不要和** `glasses/display_server.py` **抢同一端口**（默认都是 8766）。
 
@@ -19,6 +19,8 @@ Nova-3 **不支持** `keywords`（HTTP 400 / 流式 WS 静默断开）。必须�
 - streaming nova-3 + keywords 失败：https://github.com/deepgram/deepgram-js-sdk/issues/474
 
 词表：`server/terms_zh.json`（约 50 个中英 IT 词）。编辑该 JSON 数组即可；不要写 `term:1.5`，不要逗号拼一条。启动时打一行 `keyterms=N from <path> (nova-3 uses keyterm, not keywords)`。`--no-keyterms` 可关，方便 A/B。
+
+官方写明 **Nova-3 的 monolingual 和 multilingual 都可以用 `keyterm`**：https://developers.deepgram.com/docs/keyterm 。Self-hosted 2025-12-10 changelog 也写了 Nova-3 Multi 的 multilingual keyterm（最多约 500 token）：https://developers.deepgram.com/changelog/2025/12/10 。旧版 hosted/self-hosted 模型若报 `The selected Nova-3 model does not support keyterm prompting`，是模型版本问题，不是 `language=multi` 本身禁 keyterm。本仓库对 `zh` 和 `multi` 都传同一份 `keyterm` 列表，从不传 `keywords`。
 
 ### 怎么跑（戴镜）
 
@@ -43,9 +45,12 @@ export LIVE_WEARER_NOTE='佩戴者是软件工程师，当前对话为 IT 技术
 python server/live.py
 python server/live.py --host 0.0.0.0 --port 8766 --lang zh
 python server/live.py --lang multi --log live_multi.jsonl
+python server/live.py --no-policy --log live_nopolicy.jsonl
 ```
 
-重启（改默认 / 词表 / Self 政策后必须）：Ctrl-C 停掉旧 `python server/live.py`，再跑同一条命令。改 `terms_zh.json` 后必须重启才会进 Deepgram 握手。眼镜插件若已 Connect，断线再连一次。
+启动横幅必须能看到 `router_timeout_ms=3000`（以及 `source=default|cli|env`）和 `policy=on` / `policy=off`。若 `.env` 里还留着 `LIVE_ROUTER_TIMEOUT_MS=1800`，横幅会打印 `source=env LIVE_ROUTER_TIMEOUT_MS=1800`——那不是代码默认，是环境覆盖。
+
+重启（改默认 / 词表 / 策略后必须）：Ctrl-C 停掉旧 `python server/live.py`，再跑同一条命令。改 `terms_zh.json` 后必须重启才会进 Deepgram 握手。眼镜插件若已 Connect，断线再连一次。
 
 3. 眼镜插件：
 
@@ -62,7 +67,7 @@ npx evenhub-simulator http://localhost:5173
 4. 手机页填 `ws://<电脑LAN>:8766`（灰色占位符不是值），点 **Connect**。
    `app.json` `network.whitelist` 须含该 origin（QR 开发态可能跳过，正式包必须写全，无通配符）。
 5. 状态出现 `deepgram_ready` 后开麦。镜腿单击 = 暂停/恢复采集；双击 = `shutDownPageContainer(1)` 退出。
-6. 对面**或佩戴者**问技术问题都会进 `route()`。jsonl 里 `kind=final` 是原始 FINAL，`kind=turn` 是聚合后的文本 + router（含 `speakerRole`）。`should_respond=true` 时镜片出字。短于 `--min-route-chars`（默认 3）且**未命中** `terms_zh.json` 的聚合句 `skip_reason=too_short`，不调 OpenAI；命中 keyterm（如 `RAG` / `Pod` / `限流`）即使更短也放行。
+6. 对面**或佩戴者**问技术问题都会进 `route()`。`should_respond=true` 后先走 `display_policy`（预算 / 置信 / 去重 / 长度 / TTL），通过才 `{"text": display_text}` 上镜。约 10s 后独立定时器再推 `・` 清屏（无 hide API，见 `glasses/SDK_NOTES.md`）。`--no-policy` 时 TRIGGER 直接推 router `answer`，和 M1 一样。
 
 物理验收（戴上 G2、看见字）由使用者完成。本环境不编造硬件结果。A/B 清单：`server/ASR_EVAL.md`。朗读稿：`server/fixtures/it_questions_20.txt`。
 
@@ -72,14 +77,41 @@ npx evenhub-simulator http://localhost:5173
 [00:12.30] Other  这个接口保证幂等吗
 [00:13.45]   → TRIGGER  conf=0.90  lat=980ms
 [00:13.45]     幂等：多次执行结果相同
+[00:13.45]   → policy  action=push  mode=full  ttl=10000ms
+[00:23.45]   → policy_clear  text='・'
 
 [00:18.02] Self  嗯嗯明白了
 [00:18.90]   → skip  conf=0.95  reason: backchannel
 ```
 
-### zh vs multi（同一批话）
+超时行会写成：
 
-没有离线音频夹具。戴镜对同一批 `server/fixtures/it_questions_20.txt` 各录一份 jsonl：
+```
+→ skip  reason: router_timeout  waited=3000ms  source=default DEFAULT_ROUTER_TIMEOUT_MS=3000  (code DEFAULT_ROUTER_TIMEOUT_MS=3000)
+```
+
+### zh vs multi（文档结论，不是猜）
+
+`--lang multi` 已经接到 Deepgram `language=multi`；router `locale` 仍是 `zh`。
+
+官方 Codeswitching：`language=multi` + `model=nova-3`（预录和流式都支持）。  
+https://developers.deepgram.com/docs/multilingual-code-switching
+
+官方 Models 页把 nova-3 的 **`multi` 码切换集合**写成：English, Spanish, French, German, Hindi, Russian, Portuguese, Japanese, Italian, Dutch。  
+**中文不在这份 `multi` 列表里。** 中文是 **单语** 码：`zh` / `zh-CN` / `zh-Hans` / `zh-TW` / `zh-Hant`。  
+https://developers.deepgram.com/docs/models-languages-overview
+
+因此：
+
+| 场景 | 用哪个 |
+| --- | --- |
+| 这场中文 IT 会（夹英文术语） | 默认 **`--lang zh`**。单语 nova-3 明确支持中文；英文专有名词靠 `keyterm` 抬。 |
+| 官方列出的那 10 种语言互相切换 | **`--lang multi`** |
+| 想对照「中英夹杂」识别差在哪 | 同一批 `it_questions_20.txt` 各录一份 zh / multi；**不要把 multi 当成文档保证的中英混合模型** |
+
+`keyterm` 在 multi 下：**文档写明** Nova-3 monolingual **和** multilingual 都能用（见上节 URL）。本进程对两种 lang 都传同一词表。
+
+没有离线音频夹具。戴镜对照：
 
 ```bash
 python server/live.py --lang zh --log live_zh.jsonl
@@ -88,12 +120,28 @@ python server/live.py --lang multi --log live_multi.jsonl
 # 同样 20 题，同样语速/距离
 ```
 
-对比两份里 `kind=turn` 的 `raw_finals` / `aggregated_text` / `pushed`。`language=multi` 时 router `locale` 仍是 `zh`（这场是中文 IT 会）。
+对比 `kind=turn` 的 `raw_finals` / `aggregated_text` / `pushed` / `policy`。本环境不编造硬件结果。
 
 ### jsonl
 
 - `kind=final`：Deepgram 一条 is_final（含 `speech_final`）。
-- `kind=turn`：aggregator 关窗后的一句：`aggregated_text`、`raw_finals`、`speakerRole`、`direction`、完整 `router`、`timings`、`skip_reason`。
+- `kind=turn`：aggregator 关窗后的一句：`aggregated_text`、`raw_finals`、`speakerRole`、`direction`、完整 `router`、`timings`、`skip_reason`、**`policy`**。
+- `kind=policy_clear`：TTL 到期推 `・`，不依赖下一条候选。
+
+`policy`（router 触发后，或 `--no-policy` 本会走到策略时）字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `enabled` | 策略是否开启 |
+| `allowed` | 是否允许下行 |
+| `reason` | 稳定码：`below_hint` / `budget` / `dedup` / `over_max_two_lines` / `one_line` / `two_line` / `bypassed` |
+| `action` | `push` / `hint` / `preempt` / `drop` |
+| `mode` | `full` / `hint` / `none` |
+| `confidence` | router 置信 |
+| `display_text` | 实际要上镜的文本（hint 可能是 `・?`） |
+| `budget_used` / `budget_max` | 当前窗已用 / 上限 |
+| `ttl_ms` / `ttl_deadline_ms` | TTL 与到期墙钟 |
+| `consume_budget` | 这次是否占额 |
 
 ### 旋钮
 
@@ -106,12 +154,20 @@ python server/live.py --lang multi --log live_multi.jsonl
 | lang | `zh` | `--lang` / `LIVE_LANG` | Deepgram `zh` 或 `multi` |
 | locale | 由 lang 推导（`multi`→`zh`） | （随 lang） | 交给 `route()` 的 `locale` |
 | wearer_note | 佩戴者是软件工程师，当前对话为 IT 技术讨论 | `--wearer-note` / `LIVE_WEARER_NOTE` | 每段都带 |
-| router timeout | 3000 ms | `--router-timeout-ms` / `LIVE_ROUTER_TIMEOUT_MS` | 超时放弃，不重试 |
+| router timeout | **3000 ms** | `--router-timeout-ms` / `LIVE_ROUTER_TIMEOUT_MS` | 超时放弃，不重试。启动横幅 + 每次 timeout skip 都打印 `waited=Nms` 和 `source=` |
 | DG handshake | 60 s | `--handshake-timeout-s` / `DEEPGRAM_HANDSHAKE_TIMEOUT_S` | Deepgram listen 握手 |
 | agg silence | 1200 ms | `--silence-ms` / `AGG_SILENCE_MS` | 独立 ticker 每 50ms `tick()`；最后一条 FINAL 后再等这么久就关窗，不必再来 ASR |
 | min route chars | 3 | `--min-route-chars` / `MIN_ROUTE_CHARS` | 聚合后短于此且未命中 keyterm 则 `skip_reason=too_short` |
 | keyterm 词表 | `server/terms_zh.json` | `--terms` / `LIVE_TERMS_PATH` | nova-3 `keyterm` 列表 |
 | 关闭 keyterm | 关 | `--no-keyterms` | A/B 基线 |
+| display policy | **开** | `--no-policy` / `LIVE_NO_POLICY` | 关掉则 TRIGGER 直推，不经策略 |
+| POLICY_CONF_FULL | 0.85 | `--conf-full` / `POLICY_CONF_FULL` | ≥ 此值整段 |
+| POLICY_CONF_HINT | 0.70 | `--conf-hint` / `POLICY_CONF_HINT` | HINT≤c<FULL 只显示 `・?` |
+| POLICY_BUDGET_WINDOW_MS | 60000 | `--budget-window-ms` | 先推后压；窗内额满可抢一次 |
+| POLICY_BUDGET_MAX | 1 | `--budget-max` | 窗内占额次数 |
+| POLICY_TTL_MS | 10000 | `--ttl-ms` | 独立 `loop.call_later`，到期推 `・` |
+| POLICY_DEDUP_WINDOW | 10 | `--dedup-window` | 最近已推条数 |
+| POLICY_MAX_CHARS | 56 | `--max-chars` | 超过则 `over_max_two_lines` |
 | log | `live_<时间>.jsonl` | `--log` | 会话日志路径 |
 | WS URL（插件） | `ws://<页面hostname>:8766` | 手机输入框 / localStorage | 一条连接既上行 PCM 也下行文本 |
 
@@ -127,7 +183,7 @@ Router：`OPENAI_API_KEY` + `ROUTER_MODEL`，可选 `OPENAI_BASE_URL`。`max_ret
 
 `speakerRole`：`self`/`other`/`unknown` → router `SELF`/`OTHER`/`UNKNOWN`，只记 jsonl / 终端，**不**用来丢掉 Self。`direction` 只记日志，不参与判决。
 
-下行：`{"text":"..."}` 上镜；`{"status":"deepgram_ready"}` / `{"error":"..."}` 只上手机页。
+下行：`{"text":"..."}` 上镜（TTL 清屏同样走这条，内容为 `・`）；`{"status":"deepgram_ready"}` / `{"error":"..."}` 只上手机页。插件也认 `{"clear":true}`（`clearDisplay()` → 同一个 `・`），live 清屏为了和现有推送一致只发 `{"text":"・"}`。
 
 ```bash
 python -m unittest server.tests.test_live -v
@@ -135,9 +191,11 @@ python -m unittest server.tests.test_live -v
 
 ---
 
-## Phase 2 / Milestone 4 — 显示策略（本里程碑不接线）
+## Phase 3 / M2 — 显示策略（已接到 live.py）
 
-`display_policy.py` 夹在 router 决策和眼镜推送之间。Phase 3 M1 **不**调用它。单元测试：
+`display_policy.py` 夹在 router 决策和眼镜推送之间。语义未改：先推后压、窗内可抢一次、去重不占预算、TTL 用调用方提供的独立定时器。live 用 `asyncio.loop.call_later`，**不是**等下一条候选才检查到期。
+
+单元测试（含 live 接线）：
 
 ```bash
 python -m unittest discover -s server/tests -v

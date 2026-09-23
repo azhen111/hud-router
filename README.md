@@ -121,4 +121,4 @@ Even with `temperature=0`, about 10% output uncertainty has been observed. **Run
 - `asr/` — microphone → Deepgram → turn aggregator → `route()`. See `asr/README.md`.
 - `glasses/` — G2 text display (`glasses/app` official template + `glasses/display_server.py`). See `glasses/README.md` and `glasses/SDK_NOTES.md`.
 - `server/display_policy.py` — confidence / budget / dedup / TTL / 56-char cap (wrap at 28). See `server/README.md`.
-- `server/live.py` — Phase 3：G2 PCM → Deepgram（`keyterm`）→ aggregator → `route()` → 镜片。见 `server/README.md` / `server/ASR_EVAL.md`。
+- `server/live.py` — Phase 3：G2 PCM → Deepgram（`keyterm`，`zh` 或 `multi`）→ aggregator → `route()` → **display_policy** → 镜片。`--no-policy` 可关。见 `server/README.md` / `server/ASR_EVAL.md`。

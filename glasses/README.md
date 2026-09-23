@@ -260,7 +260,7 @@ npx evenhub qr --url "http://<LAN>:5173"
 
 启动页 `createStartUpPageContainer` 一次（576×288 文本容器），之后只 `textContainerUpgrade`。根页双击 `shutDownPageContainer(1)`。
 
-Phase 3 / M1 live：`python server/live.py`，插件 Connect 到 `ws://<LAN>:8766`。镜腿单击 = 暂停/恢复采集（`audioControl`），不是连/断 WS。`stt.ts` 把 PCM + `speakerRole` + `direction` 上行；下行 `{"text"}` 上镜。步骤与旋钮见 `server/README.md`。
+Phase 3 live：`python server/live.py`（默认开 display_policy；`--lang multi` / `--no-policy` 见 `server/README.md`）。插件 Connect 到 `ws://<LAN>:8766`。镜腿单击 = 暂停/恢复采集（`audioControl`），不是连/断 WS。`stt.ts` 把 PCM + `speakerRole` + `direction` 上行；下行 `{"text"}` 上镜（TTL 清屏推 `・`）。
 
 ## 3.2 模拟器（不用戴眼镜）
 

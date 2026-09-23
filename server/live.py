@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Phase 3 live path: G2 PCM → Deepgram → aggregator → router → lens.
+"""Phase 3 live path: G2 PCM → Deepgram → aggregator → router → policy → lens.
 
-No display_policy, no RAG. Silence-closed turns go to route() (independent
-ticker; speech_final does not close). Nova-3 uses `keyterm` (not `keywords`).
-Self utterances are sent to route() like Other; speakerRole is logs only.
+Silence-closed turns go to route() (independent ticker; speech_final does
+not close). Router output goes through display_policy before any downlink
+unless --no-policy. Nova-3 uses `keyterm` (not `keywords`). Self utterances
+are sent to route() like Other; speakerRole is logs only. No RAG.
 """
 
 from __future__ import annotations
@@ -23,13 +24,22 @@ from typing import Any, TextIO
 
 ROOT = Path(__file__).resolve().parents[1]
 ASR_DIR = ROOT / "asr"
-for _p in (str(ROOT), str(ASR_DIR)):
+SERVER_DIR = Path(__file__).resolve().parent
+for _p in (str(ROOT), str(ASR_DIR), str(SERVER_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
 from colorama import Fore, Style, init as colorama_init
 
 from aggregator import AggregatedTurn, AggregatorConfig, FinalSegment, TurnAggregator
+from display_policy import (
+    DEFAULT_CLEAR_PLACEHOLDER,
+    Candidate,
+    DisplayPolicy,
+    PolicySettings,
+    add_policy_args,
+    load_policy_settings,
+)
 from router import RouterConfigError, RouterResult, route
 from settings import DEFAULT_AGG_MAX_TURN_MS, DEFAULT_AGG_SILENCE_MS
 from stream import (
@@ -59,6 +69,7 @@ DEFAULT_WEARER_NOTE = "佩戴者是软件工程师，当前对话为 IT 技术�
 DEFAULT_ROUTER_TIMEOUT_MS = 3000
 DEFAULT_MIN_ROUTE_CHARS = 3
 DEFAULT_TERMS_PATH = Path(__file__).resolve().parent / "terms_zh.json"
+POLICY_ACCEPT_ACTIONS = frozenset({"push", "hint", "preempt"})
 
 
 def locale_from_lang(lang: str) -> str:
@@ -167,6 +178,119 @@ def parse_uplink_message(raw: object) -> tuple[bytes, str, int | None] | None:
     return pcm, role, direction
 
 
+def resolve_router_timeout_ms(args: argparse.Namespace) -> tuple[int, str]:
+    """Return (ms, source). CLI > env LIVE_ROUTER_TIMEOUT_MS > DEFAULT 3000."""
+    if getattr(args, "router_timeout_ms", None) is not None:
+        ms = int(args.router_timeout_ms)
+        return ms, f"cli --router-timeout-ms={ms}"
+    env_raw = os.environ.get("LIVE_ROUTER_TIMEOUT_MS")
+    if env_raw is not None and str(env_raw).strip() != "":
+        ms = int(env_raw)
+        return ms, f"env LIVE_ROUTER_TIMEOUT_MS={ms}"
+    return (
+        DEFAULT_ROUTER_TIMEOUT_MS,
+        f"default DEFAULT_ROUTER_TIMEOUT_MS={DEFAULT_ROUTER_TIMEOUT_MS}",
+    )
+
+
+def format_router_timeout_skip(timeout_ms: int, source: str) -> str:
+    """Unambiguous timeout skip line (must include the waited-ms number)."""
+    return (
+        f"router_timeout  waited={timeout_ms}ms  source={source}  "
+        f"(code DEFAULT_ROUTER_TIMEOUT_MS={DEFAULT_ROUTER_TIMEOUT_MS})"
+    )
+
+
+def policy_enabled_from_args(args: argparse.Namespace) -> bool:
+    if getattr(args, "no_policy", False):
+        return False
+    raw = _env("LIVE_NO_POLICY", "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return False
+    return True
+
+
+def apply_trigger_policy(
+    policy: DisplayPolicy | None,
+    answer: str,
+    confidence: float,
+    kind: str = "answer",
+    ts_ms: int | None = None,
+) -> tuple[bool, str, dict[str, Any]]:
+    """Run display_policy on a router trigger. policy=None means --no-policy.
+
+    Returns (allowed, display_text, audit).
+    """
+    if policy is None:
+        audit = policy_audit(
+            enabled=False,
+            allowed=True,
+            reason="bypassed",
+            action="push",
+            mode="full",
+            confidence=confidence,
+            display_text=answer,
+            budget_used=None,
+            budget_max=None,
+            ttl_ms=None,
+            ttl_deadline_ms=None,
+            consume_budget=None,
+        )
+        return True, answer, audit
+    cand = Candidate(text=answer, confidence=confidence, kind=kind, ts_ms=ts_ms)
+    decision = policy.consider(cand)
+    allowed = decision.action in POLICY_ACCEPT_ACTIONS
+    now = cand.ts_ms if cand.ts_ms is not None else policy.now_ms()
+    ttl_deadline = (now + policy.settings.ttl_ms) if allowed else None
+    audit = policy_audit(
+        enabled=True,
+        allowed=allowed,
+        reason=decision.reason,
+        action=decision.action,
+        mode=decision.tier,
+        confidence=confidence,
+        display_text=decision.display_text,
+        budget_used=policy.used,
+        budget_max=policy.settings.budget_max,
+        ttl_ms=policy.settings.ttl_ms,
+        ttl_deadline_ms=ttl_deadline,
+        consume_budget=decision.consume_budget,
+    )
+    return allowed, (decision.display_text if allowed else ""), audit
+
+
+def policy_audit(
+    *,
+    enabled: bool,
+    allowed: bool,
+    reason: str,
+    action: str | None,
+    mode: str,
+    confidence: float | None,
+    display_text: str,
+    budget_used: int | None,
+    budget_max: int | None,
+    ttl_ms: int | None,
+    ttl_deadline_ms: int | None,
+    consume_budget: bool | None,
+) -> dict[str, Any]:
+    """Stable jsonl `policy` object for offline false-trigger analysis."""
+    return {
+        "enabled": enabled,
+        "allowed": allowed,
+        "reason": reason,
+        "action": action,
+        "mode": mode,
+        "confidence": confidence,
+        "display_text": display_text,
+        "budget_used": budget_used,
+        "budget_max": budget_max,
+        "ttl_ms": ttl_ms,
+        "ttl_deadline_ms": ttl_deadline_ms,
+        "consume_budget": consume_budget,
+    }
+
+
 def route_with_timeout(
     payload: dict[str, object],
     timeout_s: float,
@@ -218,12 +342,15 @@ class LiveSettings:
         lang: str,
         wearer_note: str,
         router_timeout_ms: int,
+        router_timeout_source: str,
         handshake_timeout_s: float,
         log_path: Path,
         silence_ms: int,
         min_route_chars: int,
         keyterms: list[str],
         terms_path: Path | None,
+        policy_enabled: bool,
+        policy: PolicySettings,
     ) -> None:
         self.host = host
         self.port = port
@@ -231,12 +358,15 @@ class LiveSettings:
         self.locale = locale_from_lang(lang)
         self.wearer_note = wearer_note
         self.router_timeout_ms = router_timeout_ms
+        self.router_timeout_source = router_timeout_source
         self.handshake_timeout_s = handshake_timeout_s
         self.log_path = log_path
         self.silence_ms = silence_ms
         self.min_route_chars = min_route_chars
         self.keyterms = keyterms
         self.terms_path = terms_path
+        self.policy_enabled = policy_enabled
+        self.policy = policy
 
 
 class LiveSession:
@@ -275,9 +405,51 @@ class LiveSession:
         self.agg_lock = threading.Lock()
         self._recent_finals: list[dict[str, Any]] = []
         self._tick_task: asyncio.Task[None] | None = None
+        self.policy_engine: DisplayPolicy | None = None
+        self._ttl_handle: asyncio.TimerHandle | None = None
+        self._ttl_deadline_ms: int | None = None
+        if settings.policy_enabled:
+            self.policy_engine = DisplayPolicy(
+                settings=settings.policy,
+                now_ms=lambda: int(time.time() * 1000),
+                set_timer=self._policy_set_timer,
+                clear_timer=self._policy_clear_timer,
+                on_expire=self._policy_on_expire,
+            )
 
     def now_rel(self) -> float:
         return time.perf_counter() - self.started_perf
+
+    def _policy_clear_timer(self) -> None:
+        if self._ttl_handle is not None:
+            self._ttl_handle.cancel()
+            self._ttl_handle = None
+        self._ttl_deadline_ms = None
+
+    def _policy_set_timer(self, delay_ms: int, cb: Any) -> None:
+        self._policy_clear_timer()
+        self._ttl_deadline_ms = int(time.time() * 1000) + int(delay_ms)
+        self._ttl_handle = self.loop.call_later(max(0.0, delay_ms / 1000.0), cb)
+
+    def _policy_on_expire(self) -> None:
+        if self.closed:
+            return
+        self.loop.create_task(self._policy_clear_downlink())
+
+    async def _policy_clear_downlink(self) -> None:
+        placeholder = self.settings.policy.clear_placeholder or DEFAULT_CLEAR_PLACEHOLDER
+        stamp = fmt_session_ts(self.now_rel())
+        print(f"{stamp}   → policy_clear  text={placeholder!r}", flush=True)
+        await self._send_json({"text": placeholder})
+        self._write_record(
+            {
+                "kind": "policy_clear",
+                "ts": datetime.now().isoformat(timespec="milliseconds"),
+                "session_rel_s": round(self.now_rel(), 3),
+                "text": placeholder,
+                "ttl_ms": self.settings.policy.ttl_ms,
+            }
+        )
 
     def start_deepgram(self) -> None:
         session = DeepgramPcmSession(
@@ -453,11 +625,12 @@ class LiveSession:
         pushed = False
         t_down: float | None = None
         skip_reason: str | None = None
+        policy_rec: dict[str, Any] | None = None
         if timed_out:
             skip_reason = "router_timeout"
             print(
-                f"{fmt_session_ts(self.now_rel())}   → skip  reason: router timeout "
-                f"({self.settings.router_timeout_ms}ms)",
+                f"{fmt_session_ts(self.now_rel())}   → skip  reason: "
+                f"{format_router_timeout_skip(self.settings.router_timeout_ms, self.settings.router_timeout_source)}",
                 flush=True,
             )
         elif result is None:
@@ -476,10 +649,33 @@ class LiveSession:
                 f"{fmt_session_ts(self.now_rel())}     {result.answer}",
                 flush=True,
             )
-            t_down = time.perf_counter()
-            await self._send_json({"text": result.answer})
-            t_down = (time.perf_counter() - t_down) * 1000.0
-            pushed = True
+            allowed, display, policy_rec = apply_trigger_policy(
+                self.policy_engine,
+                result.answer,
+                result.confidence,
+                result.kind,
+            )
+            if self._ttl_deadline_ms is not None and policy_rec is not None:
+                policy_rec["ttl_deadline_ms"] = self._ttl_deadline_ms
+            if not allowed:
+                skip_reason = f"policy_{policy_rec.get('reason', 'drop')}"
+                print(
+                    f"{fmt_session_ts(self.now_rel())}   → skip  policy  "
+                    f"reason={policy_rec.get('reason')}  "
+                    f"budget_used={policy_rec.get('budget_used')}/{policy_rec.get('budget_max')}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"{fmt_session_ts(self.now_rel())}   → policy  "
+                    f"action={policy_rec.get('action')}  mode={policy_rec.get('mode')}  "
+                    f"ttl={self.settings.policy.ttl_ms}ms",
+                    flush=True,
+                )
+                t_down = time.perf_counter()
+                await self._send_json({"text": display})
+                t_down = (time.perf_counter() - t_down) * 1000.0
+                pushed = True
         else:
             skip_reason = "none"
             reason = result.reason if result is not None else "none"
@@ -502,6 +698,7 @@ class LiveSession:
             t_route,
             t_down,
             skip_reason=skip_reason,
+            policy=policy_rec,
         )
 
     def _route_once(
@@ -530,6 +727,7 @@ class LiveSession:
         downlink_ms: float | None,
         skip_reason: str | None = None,
         error: str | None = None,
+        policy: dict[str, Any] | None = None,
     ) -> None:
         record: dict[str, Any] = {
             "kind": "turn",
@@ -557,6 +755,8 @@ class LiveSession:
             record["skip_reason"] = skip_reason
         if error:
             record["error"] = error
+        if policy is not None:
+            record["policy"] = policy
         self._write_record(record)
 
     async def _send_json(self, obj: dict[str, Any]) -> None:
@@ -569,6 +769,7 @@ class LiveSession:
 
     async def aclose(self) -> None:
         self.closed = True
+        self._policy_clear_timer()
         if self._tick_task is not None:
             self._tick_task.cancel()
             self._tick_task = None
@@ -587,6 +788,7 @@ class LiveSession:
     def close(self) -> None:
         """Sync fallback when not on the session loop."""
         self.closed = True
+        self._policy_clear_timer()
         if self.dg is not None:
             try:
                 self.dg.close()
@@ -650,6 +852,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="do not send keyterm (A/B baseline)",
     )
+    p.add_argument(
+        "--no-policy",
+        action="store_true",
+        help="bypass display_policy; router trigger pushes as before (A/B)",
+    )
+    add_policy_args(p)
     p.add_argument("--log", default=None, help="jsonl path (default live_YYYYmmdd_HHMMSS.jsonl)")
     return p.parse_args(argv)
 
@@ -664,11 +872,7 @@ def build_settings(args: argparse.Namespace) -> LiveSettings:
         if args.wearer_note is not None
         else _env("LIVE_WEARER_NOTE", DEFAULT_WEARER_NOTE)
     )
-    timeout_ms = (
-        args.router_timeout_ms
-        if args.router_timeout_ms is not None
-        else int(_env("LIVE_ROUTER_TIMEOUT_MS", str(DEFAULT_ROUTER_TIMEOUT_MS)))
-    )
+    timeout_ms, timeout_source = resolve_router_timeout_ms(args)
     handshake = (
         args.handshake_timeout_s
         if args.handshake_timeout_s is not None
@@ -698,18 +902,27 @@ def build_settings(args: argparse.Namespace) -> LiveSettings:
         raw_terms = args.terms if args.terms is not None else _env("LIVE_TERMS_PATH", "")
         terms_path = Path(raw_terms) if raw_terms else DEFAULT_TERMS_PATH
         keyterms = load_keyterms(terms_path) if terms_path.is_file() else []
+    policy_on = policy_enabled_from_args(args)
+    cfg = getattr(args, "policy_config", None)
+    policy = load_policy_settings(
+        cli=args,
+        config_path=Path(cfg) if cfg else None,
+    )
     return LiveSettings(
         host=host,
         port=port,
         lang=lang,
         wearer_note=note,
         router_timeout_ms=timeout_ms,
+        router_timeout_source=timeout_source,
         handshake_timeout_s=handshake,
         log_path=log_path,
         silence_ms=silence_ms,
         min_route_chars=min_route,
         keyterms=keyterms,
         terms_path=terms_path,
+        policy_enabled=policy_on,
+        policy=policy,
     )
 
 
@@ -720,7 +933,9 @@ def log_startup(settings: LiveSettings) -> None:
         f"live  ws://{settings.host}:{settings.port}  "
         f"dg={DEEPGRAM_MODEL} lang={settings.lang} locale={settings.locale}  "
         f"audio={SAMPLE_RATE}Hz mono s16le  "
-        f"router_timeout={settings.router_timeout_ms}ms  "
+        f"router_timeout_ms={settings.router_timeout_ms}  "
+        f"router_timeout_source={settings.router_timeout_source}  "
+        f"(DEFAULT_ROUTER_TIMEOUT_MS={DEFAULT_ROUTER_TIMEOUT_MS})  "
         f"dg_handshake={settings.handshake_timeout_s:.0f}s  "
         f"agg_silence={settings.silence_ms}ms  "
         f"min_route_chars={settings.min_route_chars}",
@@ -731,6 +946,17 @@ def log_startup(settings: LiveSettings) -> None:
         "(nova-3 uses keyterm, not keywords; see https://developers.deepgram.com/docs/keyterm)",
         flush=True,
     )
+    pol = settings.policy
+    if settings.policy_enabled:
+        print(
+            f"policy=on  full={pol.conf_full} hint={pol.conf_hint}  "
+            f"budget={pol.budget_max}/{pol.budget_window_ms}ms  "
+            f"ttl={pol.ttl_ms}ms  max_chars={pol.max_chars}  "
+            f"dedup={pol.dedup_window}  clear={pol.clear_placeholder!r}",
+            flush=True,
+        )
+    else:
+        print("policy=off  (--no-policy / LIVE_NO_POLICY)", flush=True)
     print(f"wearer_note={settings.wearer_note!r}", flush=True)
     print(f"jsonl={settings.log_path}", flush=True)
     print("Connect glasses/app, then speak. Ctrl-C to stop.\n", flush=True)

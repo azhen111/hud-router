@@ -9,7 +9,9 @@
 - 同一房间、同一距离、同一语速。
 - 插件连 `ws://<LAN>:8766`，开麦后再读。
 - 需要：`DEEPGRAM_API_KEY`、`OPENAI_API_KEY`、`ROUTER_MODEL`。
-- 默认加固：keyterm 开、`--silence-ms 1200`、`--min-route-chars 3`（命中词表豁免短句）、router timeout 3000ms。Self 发话也会进 `route()`。
+- 默认加固：keyterm 开、`--silence-ms 1200`、`--min-route-chars 3`（命中词表豁免短句）、router timeout **3000ms**（启动横幅 `router_timeout_ms=3000`）、**policy 开**。Self 发话也会进 `route()`。
+- A/B：`--lang multi`（Deepgram `language=multi` + 同一 keyterm；router locale 仍 zh）。官方 `multi` 码切换列表不含中文，见 `server/README.md`。
+- A/B：`--no-policy` 关闭显示策略。
 
 ## Before（对照）
 
@@ -39,7 +41,9 @@ python server/live.py --lang multi --log live_multi.jsonl
 ## 看 jsonl
 
 - `kind=final`：原始 FINAL / `speech_final`。
-- `kind=turn`：`raw_finals` + `aggregated_text` + `router` / `skip_reason`。
+- `kind=turn`：`raw_finals` + `aggregated_text` + `router` / `skip_reason` / **`policy`**。
+- `kind=policy_clear`：TTL 到期推 `・`。
 - 过短：`skip_reason=too_short`（且 `error` 写明 `N < min; no keyterm hit`），`pushed=false`，没有 OpenAI 调用。命中 `terms_zh.json` 的短句不走这条。
+- 策略拒绝：`skip_reason=policy_<reason>`，`policy.reason` 为 `below_hint` / `budget` / `dedup` / `over_max_two_lines`。
 
 对比 before/after 或 zh/multi 时，只比较这 20 句对应的 `turn` 行，不要事后改 prompt 或 testcases。

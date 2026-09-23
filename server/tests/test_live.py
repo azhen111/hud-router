@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import io
 import json
 import unittest
+from contextlib import redirect_stdout
 
+from server.display_policy import Candidate, DisplayPolicy, PolicySettings
 from server.live import (
     DEFAULT_MIN_ROUTE_CHARS,
     DEFAULT_ROUTER_TIMEOUT_MS,
     DEFAULT_TERMS_PATH,
+    apply_trigger_policy,
     build_settings,
     display_speaker,
+    format_router_timeout_skip,
     hits_keyterm,
     locale_from_lang,
+    log_startup,
     map_speaker_role,
     parse_args,
     parse_uplink_message,
@@ -21,6 +28,7 @@ from server.live import (
 )
 from settings import DEFAULT_AGG_SILENCE_MS
 from stream import listen_connect_kwargs, load_keyterms
+from server.tests.test_display_policy import FakeClock, make_policy
 
 
 class SpeakerMap(unittest.TestCase):
@@ -179,6 +187,161 @@ class KeytermLoad(unittest.TestCase):
         self.assertEqual(off.keyterms, [])
         self.assertEqual(off.min_route_chars, 6)
         self.assertEqual(off.silence_ms, 800)
+
+
+class MultiLang(unittest.TestCase):
+    def test_multi_keeps_keyterm_and_zh_locale(self) -> None:
+        settings = build_settings(parse_args(["--lang", "multi", "--log", "/tmp/live_multi.jsonl"]))
+        self.assertEqual(settings.lang, "multi")
+        self.assertEqual(settings.locale, "zh")
+        kwargs = listen_connect_kwargs(settings.lang, settings.keyterms)
+        self.assertEqual(kwargs["language"], "multi")
+        self.assertEqual(kwargs["model"], "nova-3")
+        self.assertIn("keyterm", kwargs)
+        self.assertGreaterEqual(len(kwargs["keyterm"]), 45)
+        self.assertNotIn("keywords", kwargs)
+
+
+class RouterTimeoutTruth(unittest.TestCase):
+    def test_default_is_3000_and_logged(self) -> None:
+        self.assertEqual(DEFAULT_ROUTER_TIMEOUT_MS, 3000)
+        settings = build_settings(parse_args(["--log", "/tmp/live_to.jsonl"]))
+        self.assertEqual(settings.router_timeout_ms, 3000)
+        self.assertIn("3000", settings.router_timeout_source)
+        line = format_router_timeout_skip(
+            settings.router_timeout_ms, settings.router_timeout_source
+        )
+        self.assertIn("waited=3000ms", line)
+        self.assertIn("DEFAULT_ROUTER_TIMEOUT_MS=3000", line)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            log_startup(settings)
+        out = buf.getvalue()
+        self.assertIn("router_timeout_ms=3000", out)
+        self.assertIn("DEFAULT_ROUTER_TIMEOUT_MS=3000", out)
+
+    def test_cli_override_source(self) -> None:
+        settings = build_settings(
+            parse_args(["--router-timeout-ms", "1800", "--log", "/tmp/live_to2.jsonl"])
+        )
+        self.assertEqual(settings.router_timeout_ms, 1800)
+        self.assertIn("cli", settings.router_timeout_source)
+        self.assertIn("1800", settings.router_timeout_source)
+
+
+class PolicyWiring(unittest.TestCase):
+    def test_allow_push(self) -> None:
+        clock = FakeClock()
+        p, _ = make_policy(clock)
+        allowed, text, audit = apply_trigger_policy(p, "幂等：多次执行结果相同", 0.90)
+        self.assertTrue(allowed)
+        self.assertEqual(text, "幂等：多次执行结果相同")
+        self.assertTrue(audit["enabled"])
+        self.assertTrue(audit["allowed"])
+        self.assertEqual(audit["action"], "push")
+        self.assertEqual(audit["mode"], "full")
+        self.assertEqual(audit["budget_used"], 1)
+        self.assertEqual(audit["budget_max"], 1)
+        self.assertEqual(audit["ttl_ms"], 10_000)
+
+    def test_deny_below_hint(self) -> None:
+        clock = FakeClock()
+        p, _ = make_policy(clock)
+        allowed, text, audit = apply_trigger_policy(p, "幂等：多次执行结果相同", 0.69)
+        self.assertFalse(allowed)
+        self.assertEqual(text, "")
+        self.assertEqual(audit["reason"], "below_hint")
+        self.assertFalse(audit["allowed"])
+
+    def test_deny_budget(self) -> None:
+        clock = FakeClock()
+        p, _ = make_policy(clock)
+        apply_trigger_policy(p, "第一条答案够一眼", 0.90, ts_ms=0)
+        allowed, _, audit = apply_trigger_policy(p, "第二条完全不同的话", 0.91, ts_ms=1000)
+        self.assertFalse(allowed)
+        self.assertEqual(audit["reason"], "budget")
+        self.assertEqual(audit["budget_used"], 1)
+
+    def test_deny_dedup(self) -> None:
+        clock = FakeClock()
+        p, _ = make_policy(clock)
+        apply_trigger_policy(p, "同一句话不要再推", 0.90, ts_ms=0)
+        clock.t = 60_000
+        allowed, _, audit = apply_trigger_policy(p, "同一句话不要再推", 0.95, ts_ms=60_000)
+        self.assertFalse(allowed)
+        self.assertEqual(audit["reason"], "dedup")
+
+    def test_deny_over_length(self) -> None:
+        clock = FakeClock()
+        p, _ = make_policy(clock)
+        allowed, _, audit = apply_trigger_policy(p, "测" * 57, 0.90)
+        self.assertFalse(allowed)
+        self.assertEqual(audit["reason"], "over_max_two_lines")
+
+    def test_no_policy_bypasses(self) -> None:
+        settings = build_settings(
+            parse_args(["--no-policy", "--log", "/tmp/live_nopol.jsonl"])
+        )
+        self.assertFalse(settings.policy_enabled)
+        allowed, text, audit = apply_trigger_policy(
+            None, "幂等：多次执行结果相同", 0.50
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(text, "幂等：多次执行结果相同")
+        self.assertFalse(audit["enabled"])
+        self.assertEqual(audit["reason"], "bypassed")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            log_startup(settings)
+        self.assertIn("policy=off", buf.getvalue())
+
+    def test_startup_prints_policy_on(self) -> None:
+        settings = build_settings(parse_args(["--log", "/tmp/live_pol.jsonl"]))
+        self.assertTrue(settings.policy_enabled)
+        self.assertEqual(settings.policy.conf_full, 0.85)
+        self.assertEqual(settings.policy.conf_hint, 0.70)
+        self.assertEqual(settings.policy.budget_window_ms, 60_000)
+        self.assertEqual(settings.policy.budget_max, 1)
+        self.assertEqual(settings.policy.ttl_ms, 10_000)
+        self.assertEqual(settings.policy.dedup_window, 10)
+        self.assertEqual(settings.policy.max_chars, 56)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            log_startup(settings)
+        out = buf.getvalue()
+        self.assertIn("policy=on", out)
+        self.assertIn("full=0.85", out)
+        self.assertIn("ttl=10000ms", out)
+        self.assertIn("max_chars=56", out)
+
+
+class PolicyTtlTimer(unittest.IsolatedAsyncioTestCase):
+    async def test_ttl_clear_fires_without_new_candidate(self) -> None:
+        expired: list[str] = []
+        loop = asyncio.get_running_loop()
+        handles: list[asyncio.TimerHandle] = []
+
+        def set_timer(delay_ms: int, cb) -> None:
+            handles.append(loop.call_later(delay_ms / 1000.0, cb))
+
+        def clear_timer() -> None:
+            for h in handles:
+                h.cancel()
+            handles.clear()
+
+        policy = DisplayPolicy(
+            settings=PolicySettings(ttl_ms=40),
+            now_ms=lambda: int(loop.time() * 1000),
+            set_timer=set_timer,
+            clear_timer=clear_timer,
+            on_expire=lambda: expired.append("clear"),
+        )
+        d = policy.consider(Candidate("幂等：多次执行结果相同", 0.90))
+        self.assertEqual(d.action, "push")
+        self.assertEqual(expired, [])
+        await asyncio.sleep(0.08)
+        self.assertEqual(expired, ["clear"])
+        self.assertFalse(policy.showing)
 
 
 if __name__ == "__main__":
