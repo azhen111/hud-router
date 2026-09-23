@@ -138,7 +138,7 @@ python server/live.py --lang multi --log live_multi.jsonl
 
 - `kind=final`：Deepgram 一条 is_final（含 `speech_final`）。
 - `kind=fix`：一条确定性纠正（`original` / `fixed` / `term` / `similarity`）。
-- `kind=turn`：`aggregated_text`、`fix`、`router`、`answer`（`hud`/`detail`/`hud_quality`）、`layers`（每层 `name/allowed/reason/ms`；answer 带 `hud_quality`；短行或漏第二问句时另有 `name=hud_quality` 警告层，`allowed=true` 不拦截）、`timings.judge_ms` / `answer_ms`、`skip_reason`、`policy`。下行 `{"text": hud, "detail": ..., "question": ...}`。
+- `kind=turn`：`aggregated_text`、`fix`、`router`、`answer`（`hud`/`detail`/`hud_quality`）、`layers`（每层 `name/allowed/reason/ms`；answer 带 `hud_quality`；短行、漏第二问句或提纲标签时另有 `name=hud_quality` 警告层，`allowed=true` 不拦截）、`timings.judge_ms` / `answer_ms`、`skip_reason`、`policy`。下行 `{"text": hud, "detail": ..., "question": ...}`。
 - `kind=policy_clear`：TTL 到期推 `・`，不依赖下一条候选。
 
 `policy`（router 触发后，或 `--no-policy` 本会走到策略时）字段：
