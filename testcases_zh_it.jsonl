@@ -1,0 +1,20 @@
+{"id":201,"locale":"zh","turns":[["UNKNOWN","这个接口保证幂等吗"]],"expect":true,"kind":"term"}
+{"id":202,"locale":"zh","turns":[["UNKNOWN","部署这块我们走的是 CI 自动触发"]],"expect":false,"note":"技术陈述，非提问"}
+{"id":203,"locale":"zh","turns":[["UNKNOWN","CQRS 我还真没听说过"]],"expect":true,"note":"陈述形式的提问"}
+{"id":204,"locale":"zh","turns":[["UNKNOWN","哦，微服务是吧"]],"expect":false,"note":"复述式相槌"}
+{"id":205,"locale":"zh","turns":[["UNKNOWN","嗯嗯，明白了"]],"expect":false,"note":"附和"}
+{"id":206,"locale":"zh","turns":[["UNKNOWN","响应时间大概是多少来着"]],"expect":true,"kind":"number"}
+{"id":207,"locale":"zh","turns":[["UNKNOWN","咦，怎么构建又挂了"]],"expect":false,"note":"自言自语"}
+{"id":208,"locale":"zh","turns":[["UNKNOWN","咱们内部那个认证中心现在是什么状态"]],"expect":true,"note":"内部知识，需 RAG"}
+{"id":209,"locale":"zh","turns":[["UNKNOWN","为什么会 OOM 呢"],["UNKNOWN","哦应该是堆内存设小了"]],"expect":false,"note":"自问自答"}
+{"id":210,"locale":"zh","turns":[["UNKNOWN","这个方案你觉得可行吗"]],"expect":false,"note":"征求意见，非知识型提问"}
+{"id":211,"locale":"zh","turns":[["UNKNOWN","那个网关的限流策略"]],"expect":false,"needs_more_context":true,"note":"话说一半"}
+{"id":212,"locale":"zh","turns":[["UNKNOWN","那个网关的限流策略"],["UNKNOWN","是按 QPS 还是按并发数算的"]],"expect":true,"note":"跨两句的问题"}
+{"id":213,"locale":"zh","turns":[["UNKNOWN","辛苦了，今天就到这吧"]],"expect":false,"note":"结束语"}
+{"id":214,"locale":"zh","turns":[["UNKNOWN","K8s 的 HPA 是根据什么指标扩容的"]],"expect":true,"kind":"term"}
+{"id":215,"locale":"zh","turns":[["UNKNOWN","我看日志里一堆 5xx"]],"expect":false,"note":"现象陈述，非提问"}
+{"id":216,"locale":"zh","turns":[["UNKNOWN","我看日志里一堆 5xx"],["UNKNOWN","这一般是什么原因造成的"]],"expect":true,"note":"follow-up"}
+{"id":217,"locale":"zh","turns":[["SELF","这个用的是什么协议"]],"expect":true,"note":"佩戴者发问也按内容判，不再走 SELF guard"}
+{"id":218,"locale":"zh","turns":[["UNKNOWN","然后我们就把它重构了一遍"]],"expect":false,"note":"叙述"}
+{"id":219,"locale":"zh","turns":[["UNKNOWN","灰度发布具体怎么做的"]],"expect":true}
+{"id":220,"locale":"zh","turns":[["UNKNOWN","这个词是什么意思来着，那个……幂等"]],"expect":true,"note":"带 filler 的提问"}
