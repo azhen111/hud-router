@@ -15,9 +15,11 @@
 - A/B：`--no-fix` 关闭纠错；`--single-shot` / `--no-answer-tier` 关闭 answer 级（用 judge.answer）。
 - 默认两级：judge 超时 3000ms，answer 超时 4000ms。未设 `ANSWER_MODEL` 则两级同一模型。
 
-## 纠错层离线样本（10 条已知错听）
+## 纠错层离线样本
 
-`python -m unittest server.tests.test_transcript_fix` 里的 `test_ten_known_mistranscribes`。词表 + `FIX_SIMILARITY=0.6`，无 LLM：
+词表 + `FIX_SIMILARITY=0.6`，无 LLM。`server/fixtures/asr_mistranscribe_samples.json` 是从佩戴者本机 `live_*.jsonl` 抽出的 24 条错听；`test_session_samples_file` 覆盖全句。未映射垃圾：`NIkkMykykM`、`LANSALSGAL`。
+
+孤立 token（`test_ten_known_mistranscribes`）：
 
 | ASR 错听 | 纠正为 |
 | --- | --- |
@@ -31,6 +33,33 @@
 | Bocker | Docker |
 | pud | Pod |
 | postgress | PostgreSQL |
+
+会话原句（22/22 可映射；2 条垃圾保持原样）：
+
+| 原句 | 纠正后 |
+| --- | --- |
+| 和GrafficQL怎么选 | 和GraphQL怎么选 |
+| 库布尔netes里 | Kubernetes里 |
+| pud | Pod |
+| CFCAR消息会丢吗 | Kafka消息会丢吗 |
+| GWT过期了怎么刷新 | JWT过期了怎么刷新 |
+| 熔断和线流有什么区别 | 熔断和限流有什么区别 |
+| 灰度发布怎么回拱 | 灰度发布怎么回滚 |
+| RST和GraficQL要怎么选 | REST和GraphQL要怎么选 |
+| readis | Redis |
+| 科贝尔net | Kubernetes |
+| CAFCAR消息会丢失吗 | Kafka消息会丢失吗 |
+| GRPC和HTL | gRPC和HTTP |
+| Bocker镜像太大怎么瘦身 | Docker镜像太大怎么瘦身 |
+| postgress | PostgreSQL |
+| hostgreatcircle和MyCircle怎么选 | PostgreSQL和MySQL怎么选 |
+| ICD流水线挂了怎么查 | CI/CD流水线挂了怎么查 |
+| 前端中FLCK布局怎么用 | 前端中Flex布局怎么用 |
+| 前端中的FLACS | 前端中的Flex |
+| JWA的三种特性有什么 | JWT的三种特性有什么 |
+| 你说一下JVA的重写 | 你说一下JWT的重写 |
+| JWA有哪些特性 | JWT有哪些特性 |
+| Jva | JWT |
 
 ## Before（对照）
 

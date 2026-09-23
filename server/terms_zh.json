@@ -10,8 +10,8 @@
     "variants": ["库布尔netes", "科贝尔net", "K8s", "k8s"]
   },
   {"term": "Kafka", "variants": ["CFCAR", "CAFCAR", "卡夫卡"]},
-  {"term": "gRPC", "variants": ["grpc"]},
-  {"term": "JWT", "variants": ["GWT", "JWA", "JVA"]},
+  {"term": "gRPC", "variants": ["grpc", "GRPC"]},
+  {"term": "JWT", "variants": ["GWT", "JWA", "JVA", "Jva"]},
   {"term": "Pod", "variants": ["pud"]},
   {"term": "OAuth", "variants": ["OAUTH", "ouath", "oath"]},
   {"term": "Flex", "variants": ["FLCK", "FLACS", "福莱克斯"]},

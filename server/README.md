@@ -18,7 +18,7 @@ Nova-3 **不支持** `keywords`（HTTP 400 / 流式 WS 静默断开）。必须�
 - Keywords 页写明 Nova-3 必须改用 Keyterm：https://developers.deepgram.com/docs/keywords
 - streaming nova-3 + keywords 失败：https://github.com/deepgram/deepgram-js-sdk/issues/474
 
-词表：`server/terms_zh.json`。元素可以是纯字符串，或 `{"term":"JWT","variants":["GWT","JWA"]}`。Deepgram `keyterm` 会抽出 `term` + 全部 variants（仍不要 `:权重`）。纠错层用同一张表做确定性模糊匹配。`--no-keyterms` 只关 Deepgram 词表；`--no-fix` 关纠错。
+词表：`server/terms_zh.json`。元素可以是纯字符串，或 `{"term":"JWT","variants":["GWT","JWA"]}`。Deepgram `keyterm` 会抽出 `term` + 全部 variants（仍不要 `:权重`）。纠错层用同一张表做确定性模糊匹配（拉丁 token + 中英夹杂如 `库布尔netes` + 中文 variants 精确替换）。单字助词不会粘到后面的英文（`和GraphQL`）。`--no-keyterms` 只关 Deepgram 词表；`--no-fix` 关纠错。会话错听夹具：`server/fixtures/asr_mistranscribe_samples.json`。
 
 官方写明 **Nova-3 的 monolingual 和 multilingual 都可以用 `keyterm`**：https://developers.deepgram.com/docs/keyterm 。Self-hosted 2025-12-10 changelog 也写了 Nova-3 Multi 的 multilingual keyterm（最多约 500 token）：https://developers.deepgram.com/changelog/2025/12/10 。旧版 hosted/self-hosted 模型若报 `The selected Nova-3 model does not support keyterm prompting`，是模型版本问题，不是 `language=multi` 本身禁 keyterm。本仓库对 `zh` 和 `multi` 都传同一份 `keyterm` 列表，从不传 `keywords`。
 

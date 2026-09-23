@@ -1,0 +1,122 @@
+[
+  {
+    "file": "live_20260922_232545.jsonl",
+    "text": "和GrafficQL怎么选",
+    "expect": "和GraphQL怎么选"
+  },
+  {
+    "file": "live_20260922_232545.jsonl",
+    "text": "库布尔netes里",
+    "expect": "Kubernetes里"
+  },
+  {
+    "file": "live_20260922_232545.jsonl",
+    "text": "pud",
+    "expect": "Pod"
+  },
+  {
+    "file": "live_20260922_232545.jsonl",
+    "text": "CFCAR消息会丢吗",
+    "expect": "Kafka消息会丢吗"
+  },
+  {
+    "file": "live_20260922_232545.jsonl",
+    "text": "GWT过期了怎么刷新",
+    "expect": "JWT过期了怎么刷新"
+  },
+  {
+    "file": "live_20260922_232545.jsonl",
+    "text": "熔断和线流有什么区别",
+    "expect": "熔断和限流有什么区别"
+  },
+  {
+    "file": "live_20260922_232545.jsonl",
+    "text": "灰度发布怎么回拱",
+    "expect": "灰度发布怎么回滚"
+  },
+  {
+    "file": "live_20260923_000121.jsonl",
+    "text": "RST和GraficQL要怎么选",
+    "expect": "REST和GraphQL要怎么选"
+  },
+  {
+    "file": "live_20260923_000121.jsonl",
+    "text": "readis",
+    "expect": "Redis"
+  },
+  {
+    "file": "live_20260923_000121.jsonl",
+    "text": "科贝尔net",
+    "expect": "Kubernetes"
+  },
+  {
+    "file": "live_20260923_000121.jsonl",
+    "text": "CAFCAR消息会丢失吗",
+    "expect": "Kafka消息会丢失吗"
+  },
+  {
+    "file": "live_20260923_000121.jsonl",
+    "text": "GRPC和HTL",
+    "expect": "gRPC和HTTP"
+  },
+  {
+    "file": "live_20260923_000121.jsonl",
+    "text": "Bocker镜像太大怎么瘦身",
+    "expect": "Docker镜像太大怎么瘦身"
+  },
+  {
+    "file": "live_20260923_000121.jsonl",
+    "text": "postgress",
+    "expect": "PostgreSQL"
+  },
+  {
+    "file": "live_20260923_000121.jsonl",
+    "text": "hostgreatcircle和MyCircle怎么选",
+    "expect": "PostgreSQL和MySQL怎么选"
+  },
+  {
+    "file": "live_20260923_000121.jsonl",
+    "text": "ICD流水线挂了怎么查",
+    "expect": "CI/CD流水线挂了怎么查"
+  },
+  {
+    "file": "live_20260923_210455.jsonl",
+    "text": "NIkkMykykM",
+    "expect": null
+  },
+  {
+    "file": "live_20260923_210455.jsonl",
+    "text": "密码LANSALSGAL",
+    "expect": null
+  },
+  {
+    "file": "live_20260923_210455.jsonl",
+    "text": "前端中FLCK布局怎么用",
+    "expect": "前端中Flex布局怎么用"
+  },
+  {
+    "file": "live_20260923_210455.jsonl",
+    "text": "前端中的FLACS",
+    "expect": "前端中的Flex"
+  },
+  {
+    "file": "live_20260923_210455.jsonl",
+    "text": "JWA的三种特性有什么",
+    "expect": "JWT的三种特性有什么"
+  },
+  {
+    "file": "live_20260923_210455.jsonl",
+    "text": "你说一下JVA的重写",
+    "expect": "你说一下JWT的重写"
+  },
+  {
+    "file": "live_20260923_210455.jsonl",
+    "text": "JWA有哪些特性",
+    "expect": "JWT有哪些特性"
+  },
+  {
+    "file": "live_20260923_210455.jsonl",
+    "text": "Jva",
+    "expect": "JWT"
+  }
+]

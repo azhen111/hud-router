@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 
@@ -26,6 +27,10 @@ SAMPLES = [
     ("postgress", "PostgreSQL"),
 ]
 
+SESSION_SAMPLES_PATH = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "asr_mistranscribe_samples.json"
+)
+
 
 class LoadEntries(unittest.TestCase):
     def test_mixed_schema(self) -> None:
@@ -36,6 +41,9 @@ class LoadEntries(unittest.TestCase):
         jwt = next(e for e in entries if e.term == "JWT")
         self.assertIn("GWT", jwt.variants)
         self.assertIn("JWA", jwt.variants)
+        self.assertIn("Jva", jwt.variants)
+        grpc = next(e for e in entries if e.term == "gRPC")
+        self.assertIn("GRPC", grpc.variants)
         self.assertGreaterEqual(len(entries), 40)
 
 
@@ -72,6 +80,42 @@ class ExactAndFuzzy(unittest.TestCase):
         fixed, hits = apply_fix("Bocker 和 pud 怎么配", self.entries)
         self.assertEqual(fixed, "Docker 和 Pod 怎么配")
         self.assertEqual({h.term for h in hits}, {"Docker", "Pod"})
+
+    def test_cjk_particle_not_swallowed(self) -> None:
+        fixed, hits = apply_fix("和GrafficQL怎么选", self.entries)
+        self.assertEqual(fixed, "和GraphQL怎么选")
+        self.assertEqual([h.term for h in hits], ["GraphQL"])
+
+    def test_cjk_variant_inside_sentence(self) -> None:
+        fixed, hits = apply_fix("熔断和线流有什么区别", self.entries)
+        self.assertEqual(fixed, "熔断和限流有什么区别")
+        self.assertEqual([h.term for h in hits], ["限流"])
+        rolled, hits2 = apply_fix("灰度发布怎么回拱", self.entries)
+        self.assertEqual(rolled, "灰度发布怎么回滚")
+        self.assertEqual([h.term for h in hits2], ["回滚"])
+
+    def test_grpc_casing_and_htl(self) -> None:
+        fixed, hits = apply_fix("GRPC和HTL", self.entries)
+        self.assertEqual(fixed, "gRPC和HTTP")
+        self.assertEqual({h.term for h in hits}, {"gRPC", "HTTP"})
+
+    def test_session_samples_file(self) -> None:
+        rows = json.loads(SESSION_SAMPLES_PATH.read_text(encoding="utf-8"))
+        missed: list[str] = []
+        garbage_ok = 0
+        for row in rows:
+            raw = row["text"]
+            expect = row.get("expect")
+            fixed, _hits = apply_fix(raw, self.entries, threshold=DEFAULT_FIX_SIMILARITY)
+            if expect is None:
+                if fixed != raw:
+                    missed.append(f"garbage {raw!r} changed to {fixed!r}")
+                else:
+                    garbage_ok += 1
+            elif fixed != expect:
+                missed.append(f"{raw!r} → {fixed!r} want {expect!r}")
+        self.assertEqual(missed, [])
+        self.assertEqual(garbage_ok, 2)
 
 
 class NoFixFlag(unittest.TestCase):

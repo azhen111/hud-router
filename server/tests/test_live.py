@@ -156,6 +156,8 @@ class KeytermLoad(unittest.TestCase):
             "RST",
             "MyCircle",
             "hostgreatcircle",
+            "GRPC",
+            "Jva",
         }
         missing = required - set(terms)
         self.assertEqual(missing, set())

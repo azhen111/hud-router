@@ -15,11 +15,9 @@ from typing import Any
 from difflib import SequenceMatcher
 
 DEFAULT_FIX_SIMILARITY = 0.6
-_TOKEN_RE = re.compile(
-    r"[A-Za-z][A-Za-z0-9/_.+-]*"  # REST, CI/CD, GraphQL
-    r"|[\u4e00-\u9fff]+[A-Za-z0-9]*"  # 库布尔netes, 限流
-    r"|[0-9]+[A-Za-z]+"  # 5xx-ish leftovers; usually unused
-)
+# Latin / dotted terms only. CJK and mixed (库布尔netes) are exact-needle
+# replacements so "前端中FLCK" does not become one token.
+_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9/_.+-]*")
 
 
 @dataclass(frozen=True)
@@ -134,6 +132,11 @@ def _best_match(
     exact_fold = token.casefold()
     canonical = {e.term.casefold() for e in entries}
     if exact_fold in canonical:
+        for entry in entries:
+            if entry.term.casefold() == exact_fold:
+                if token != entry.term:
+                    return entry, 1.0
+                return None
         return None
     # "鉴权吗" must not collapse to "鉴权"
     for canon in canonical:
@@ -157,6 +160,59 @@ def _best_match(
     if tied:
         return None
     return best
+
+
+def _has_cjk(text: str) -> bool:
+    return any("\u4e00" <= c <= "\u9fff" for c in text)
+
+
+def _apply_cjk_variants(
+    text: str,
+    entries: list[TermEntry],
+    hits: list[FixHit],
+) -> str:
+    """Exact replace of CJK / mixed variants. Longest needle first.
+
+    Handles 线流→限流 and 库布尔netes→Kubernetes before Latin tokenization
+    so a Chinese prefix cannot swallow FLCK / JVA / GraphQL.
+    """
+    needles: list[tuple[str, TermEntry]] = []
+    for entry in entries:
+        for needle in entry.needles():
+            if needle == entry.term or not _has_cjk(needle):
+                continue
+            needles.append((needle, entry))
+    needles.sort(key=lambda pair: (-len(pair[0]), pair[0]))
+    spans: list[tuple[int, int, TermEntry, str]] = []
+    for needle, entry in needles:
+        start = 0
+        while True:
+            idx = text.find(needle, start)
+            if idx < 0:
+                break
+            spans.append((idx, idx + len(needle), entry, needle))
+            start = idx + len(needle)
+    if not spans:
+        return text
+    spans.sort(key=lambda row: (row[0], -(row[1] - row[0])))
+    used = [False] * len(text)
+    kept: list[tuple[int, int, TermEntry, str]] = []
+    for start, end, entry, needle in spans:
+        if any(used[i] for i in range(start, end)):
+            continue
+        for i in range(start, end):
+            used[i] = True
+        kept.append((start, end, entry, needle))
+    kept.sort(key=lambda row: row[0])
+    out: list[str] = []
+    cursor = 0
+    for start, end, entry, needle in kept:
+        out.append(text[cursor:start])
+        out.append(entry.term)
+        hits.append(FixHit(needle, entry.term, entry.term, 1.0))
+        cursor = end
+    out.append(text[cursor:])
+    return "".join(out)
 
 
 def apply_fix(
@@ -189,5 +245,6 @@ def apply_fix(
         hits.append(FixHit(token, entry.term, entry.term, score))
         return entry.term
 
-    fixed = _TOKEN_RE.sub(repl, text)
+    fixed = _apply_cjk_variants(text, entries, hits)
+    fixed = _TOKEN_RE.sub(repl, fixed)
     return fixed, hits
