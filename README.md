@@ -31,6 +31,7 @@ Copy `.env.example` to `.env` or export the same variables. Nothing is hardcoded
 | `LIVE_TWO_TIER`    | no       | `0` = single-shot judge (`--single-shot` / `--no-answer-tier`) |
 | `LIVE_NO_FIX`      | no       | `1` = skip deterministic transcript_fix (`--no-fix`) |
 | `FIX_SIMILARITY`   | no       | Fuzzy match threshold (default 0.6)                  |
+| `LIVE_ASR`         | no       | Live ASR: `deepgram` (default) or `aliyun`           |
 
 `router.py` loads `.env` if present, without overwriting variables already in the environment.
 

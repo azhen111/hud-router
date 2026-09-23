@@ -2,7 +2,7 @@
 
 ## Phase 3 — live 通路（ASR 加固）
 
-`server/live.py`：眼镜 PCM 上行 → Deepgram nova-3（`keyterm`）→ aggregator → **`transcript_fix`（默认开，只改表内 variants）** → **judge** → **answer**（JSON `hud`+`detail`）→ 默认 **policy 关** → 下行 `{"text": hud, "detail": ..., "question": ...}`。空 hud 只上手机列表，不上镜。`--policy` 才走策略（`max_chars=240`，`ttl=25000`）。
+`server/live.py`：眼镜 PCM 上行 → **ASR**（默认 Deepgram nova-3 `keyterm`；`--asr aliyun` / `LIVE_ASR=aliyun` 走阿里云 NLS SpeechTranscriber）→ aggregator → **`transcript_fix`（默认开，只改表内 variants）** → **judge** → **answer**（JSON `hud`+`detail`）→ 默认 **policy 关** → 下行 `{"text": hud, "detail": ..., "question": ...}`。空 hud 只上手机列表，不上镜。`--policy` 才走策略（`max_chars=240`，`ttl=25000`）。
 
 **两级默认开。** 未配置 `ANSWER_MODEL` 时两级用同一个 `ROUTER_MODEL`。Judge 的 `answer` **不上镜**。`--single-shot` / `LIVE_TWO_TIER=0` 恢复单次 judge。`--permissive` 只在运行时给 judge 追加 `When in doubt, prefer to respond.`（不改 `ROUTER_SYSTEM_PROMPT` 源文）。每层 `layers[]`（pass/block/reason/ms）打终端和 jsonl。Answer 的 `hud` 必须是佩戴者能直接说出口的连续句子（不要「关键点：」「常见误区：」等小标题），并答完提问（「怎么样」+「如何评估」要同时写清是什么和怎么评，例如标注集 hit@k / recall@k、人工抽检），尽量填满每行 28 全角。行均长过短、漏掉第二问句、或带提纲标签时，`layers` 记 `hud_quality` 警告（**不拦截**）。
 
@@ -34,6 +34,7 @@ export OPENAI_API_KEY=...
 export ROUTER_MODEL=...
 # 可选
 export OPENAI_BASE_URL=https://...
+export LIVE_ASR=deepgram          # deepgram（默认）或 aliyun
 export LIVE_LANG=zh
 export AGG_SILENCE_MS=1200
 export MIN_ROUTE_CHARS=3
@@ -52,15 +53,22 @@ export LIVE_WEARER_NOTE='佩戴者是软件工程师，当前对话为 IT 技术
 
 ```bash
 python server/live.py
+python server/live.py --asr deepgram
 python server/live.py --host 0.0.0.0 --port 8766 --lang zh
 python server/live.py --lang multi --log live_multi.jsonl
+# Aliyun 智能语音交互（NLS SpeechTranscriber）。凭据只放本机 .env，不要写进仓库。
+# 需要 ALIYUN_NLS_APPKEY + (ALIYUN_NLS_TOKEN 或 AccessKey ID/Secret)
+python server/live.py --asr aliyun
+python server/live.py --asr aliyun --log live_aliyun.jsonl
 python server/live.py --policy --log live_policy.jsonl
 python server/live.py --permissive --log live_perm.jsonl
 python server/live.py --no-fix --log live_nofix.jsonl
 python server/live.py --single-shot --log live_singleshot.jsonl
 ```
 
-启动横幅必须能看到 `router_timeout_ms=3000`、`policy=off`（除非 `--policy`）、`keyterms_dg=`、`permissive=off`。若 `.env` 里还留着 `LIVE_ROUTER_TIMEOUT_MS=1800`，横幅会打印 `source=env`——那不是代码默认。
+启动横幅必须能看到 `asr=deepgram`（默认）、`router_timeout_ms=3000`、`policy=off`（除非 `--policy`）、`keyterms_dg=`、`permissive=off`。`--asr aliyun` 时横幅是 `asr=aliyun` 且 `keyterms_dg=n/a`（Deepgram keyterm 不发给阿里云；`terms_zh.json` 仍走 transcript_fix）。若 `.env` 里还留着 `LIVE_ROUTER_TIMEOUT_MS=1800`，横幅会打印 `source=env`——那不是代码默认。
+
+Aliyun 缺 AppKey / Token / AccessKey 时会在握手前直接报错退出，不会静默挂起。眼镜页仍等 `{"status":"deepgram_ready","asr":"..."}` 再开麦（状态字符串未改，以免插件改动）。NLS 实时协议：https://help.aliyun.com/zh/isi/developer-reference/websocket ；CreateToken：https://help.aliyun.com/zh/isi/getting-started/obtain-an-access-token 。项目里的模型语种在阿里云控制台配，`--lang` 仍只影响 Deepgram 和 router locale。
 
 重启（改默认 / 词表 / 策略后必须）：Ctrl-C 停掉旧 `python server/live.py`，再跑同一条命令。改 `terms_zh.json` 后必须重启才会进 Deepgram 握手。眼镜插件若已 Connect，断线再连一次。
 
@@ -166,7 +174,8 @@ python server/live.py --lang multi --log live_multi.jsonl
 | --- | --- | --- | --- |
 | host | `0.0.0.0` | `--host` / `LIVE_HOST` | 监听地址 |
 | port | `8766` | `--port` / `LIVE_PORT` | WebSocket 端口（与插件 URL 一致） |
-| lang | `zh` | `--lang` / `LIVE_LANG` | Deepgram `zh` 或 `multi` |
+| ASR | **deepgram** | `--asr` / `LIVE_ASR` | `deepgram`（默认）或 `aliyun`。Aliyun 要 `ALIYUN_NLS_APPKEY` + Token 或 AccessKey，缺了握手前退出 |
+| lang | `zh` | `--lang` / `LIVE_LANG` | Deepgram `zh` 或 `multi`；Aliyun 语种在 NLS 项目上配 |
 | locale | 由 lang 推导（`multi`→`zh`） | （随 lang） | 交给 `route()` 的 `locale` |
 | wearer_note | 佩戴者是软件工程师，当前对话为 IT 技术讨论 | `--wearer-note` / `LIVE_WEARER_NOTE` | 每段都带 |
 | router timeout | **3000 ms** | `--router-timeout-ms` / `LIVE_ROUTER_TIMEOUT_MS` | 超时放弃，不重试。**不是词表过滤**。启动横幅 + 每次 timeout skip 都打印 `waited=Nms` 和 `source=`（`source=env` 表示 `.env` 覆盖了 3000） |
@@ -204,7 +213,7 @@ Router：`OPENAI_API_KEY` + `ROUTER_MODEL`，可选 `OPENAI_BASE_URL`。`max_ret
 
 `speakerRole`：`self`/`other`/`unknown` → router `SELF`/`OTHER`/`UNKNOWN`，只记 jsonl / 终端，**不**用来丢掉 Self。`direction` 只记日志，不参与判决。
 
-下行：`{"text":"..."}` 上镜（TTL 清屏同样走这条，内容为 `・`）；`{"status":"deepgram_ready"}` / `{"error":"..."}` 只上手机页。插件也认 `{"clear":true}`（`clearDisplay()` → 同一个 `・`），live 清屏为了和现有推送一致只发 `{"text":"・"}`。
+下行：`{"text":"..."}` 上镜（TTL 清屏同样走这条，内容为 `・`）；`{"status":"deepgram_ready","asr":"deepgram|aliyun"}` / `{"error":"..."}` 只上手机页。插件也认 `{"clear":true}`（`clearDisplay()` → 同一个 `・`），live 清屏为了和现有推送一致只发 `{"text":"・"}`。
 
 ```bash
 python -m unittest server.tests.test_live -v

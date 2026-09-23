@@ -3,3 +3,4 @@ deepgram-sdk>=6
 sounddevice>=0.5.0
 colorama>=0.4.6
 websockets>=13
+# optional: aliyun-python-sdk-core  (CreateToken; stdlib HMAC path is the default)

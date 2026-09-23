@@ -8,6 +8,7 @@ import io
 import json
 import unittest
 from contextlib import redirect_stdout
+from unittest.mock import patch
 
 from server.display_policy import Candidate, DisplayPolicy, PolicySettings
 from server.live import (
@@ -388,6 +389,40 @@ class PolicyWiring(unittest.TestCase):
         self.assertIn("full=0.85", out)
         self.assertIn("ttl=25000ms", out)
         self.assertIn("max_chars=240", out)
+
+
+class AsrSwitch(unittest.TestCase):
+    def test_default_is_deepgram(self) -> None:
+        with patch.dict("os.environ", {"LIVE_ASR": ""}, clear=False):
+            __import__("os").environ.pop("LIVE_ASR", None)
+            settings = build_settings(parse_args(["--log", "/tmp/live_asr_def.jsonl"]))
+        self.assertEqual(settings.asr_provider, "deepgram")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            log_startup(settings)
+        out = buf.getvalue()
+        self.assertIn("asr=deepgram", out)
+        self.assertIn("keyterms_dg=", out)
+        self.assertNotIn("keyterms_dg=n/a", out)
+
+    def test_cli_aliyun_banner_hides_keyterms(self) -> None:
+        settings = build_settings(
+            parse_args(["--asr", "aliyun", "--log", "/tmp/live_asr_ali.jsonl"])
+        )
+        self.assertEqual(settings.asr_provider, "aliyun")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            log_startup(settings)
+        out = buf.getvalue()
+        self.assertIn("asr=aliyun", out)
+        self.assertIn("keyterms_dg=n/a", out)
+        self.assertIn("transcript_fix", out)
+        self.assertGreaterEqual(len(settings.fix_entries), 40)
+
+    def test_env_live_asr(self) -> None:
+        with patch.dict("os.environ", {"LIVE_ASR": "nls"}, clear=False):
+            settings = build_settings(parse_args(["--log", "/tmp/live_asr_env.jsonl"]))
+        self.assertEqual(settings.asr_provider, "aliyun")
 
 
 class TwoTierWiring(unittest.TestCase):

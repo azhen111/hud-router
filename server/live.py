@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Phase 3 live path: G2 PCM → Deepgram → aggregator → fix → judge → answer → policy → lens.
+"""Phase 3 live path: G2 PCM → ASR → aggregator → fix → judge → answer → policy → lens.
 
-Silence-closed turns go to the judge (independent ticker; speech_final does
-not close). Default path is two-tier: judge (ROUTER_SYSTEM_PROMPT) then
-answer (ANSWER_SYSTEM_PROMPT) only on should_respond. Judge ``answer`` is
-ignored for display. Deterministic transcript_fix runs before the judge.
-Nova-3 uses `keyterm` (not `keywords`). No RAG.
+ASR default is Deepgram nova-3; ``--asr aliyun`` / ``LIVE_ASR=aliyun`` selects
+Alibaba Cloud NLS SpeechTranscriber. Both emit the same ``AsrEvent`` into the
+aggregator. Silence-closed turns go to the judge (independent ticker;
+speech_final does not close). Default path is two-tier: judge then answer.
+Nova-3 uses `keyterm` (not `keywords`); Aliyun does not get that list.
+No RAG.
 """
 
 from __future__ import annotations
@@ -65,14 +66,20 @@ from stream import (
     DEEPGRAM_KEYTERM_MAX,
     DEEPGRAM_MODEL,
     SAMPLE_RATE,
-    DeepgramPcmSession,
     fmt_session_ts,
     listen_connect_kwargs,
     load_dotenv,
     load_keyterms,
-    parse_deepgram_result,
     require_api_key,
-    ParsedAsrResult,
+)
+from provider import (
+    ASR_ALIYUN,
+    ASR_DEEPGRAM,
+    AsrConfigError,
+    AsrEvent,
+    AsrSession,
+    create_asr_session,
+    resolve_asr_provider,
 )
 
 try:
@@ -491,6 +498,7 @@ class LiveSettings:
         fix_similarity: float,
         fix_entries: list[TermEntry],
         permissive: bool,
+        asr_provider: str = ASR_DEEPGRAM,
     ) -> None:
         self.host = host
         self.port = port
@@ -514,6 +522,7 @@ class LiveSettings:
         self.fix_similarity = fix_similarity
         self.fix_entries = fix_entries
         self.permissive = permissive
+        self.asr_provider = asr_provider or ASR_DEEPGRAM
 
 
 class LiveSession:
@@ -533,7 +542,8 @@ class LiveSession:
         self.started_perf = started_perf
         self.dg_key = dg_key
         self.loop = asyncio.get_running_loop()
-        self.dg: DeepgramPcmSession | None = None
+        self.asr: AsrSession | None = None
+        self.dg = None  # alias kept so older debug notes still make sense
         self.last_role = "unknown"
         self.last_direction: int | None = None
         self.route_lock = threading.Lock()
@@ -598,30 +608,37 @@ class LiveSession:
             }
         )
 
-    def start_deepgram(self) -> None:
-        session = DeepgramPcmSession(
-            api_key=self.dg_key,
+    def start_asr(self) -> None:
+        """Handshake the selected ASR vendor. Raises on timeout / missing creds."""
+        keyterms = None
+        if self.settings.asr_provider == ASR_DEEPGRAM:
+            keyterms = self.settings.keyterms or None
+        session = create_asr_session(
+            provider=self.settings.asr_provider,
             language=self.settings.lang,
-            on_message=self._on_dg_message,
-            on_error=self._on_dg_error,
+            on_event=self._on_asr_event,
+            on_error=self._on_asr_error,
             handshake_timeout_s=self.settings.handshake_timeout_s,
-            keyterms=self.settings.keyterms or None,
+            keyterms=keyterms,
+            api_key=self.dg_key or None,
         )
         session.start()
-        self.dg = session
+        self.asr = session
 
-    def _on_dg_error(self, err: object) -> None:
-        print(f"{Fore.RED}deepgram error: {err}{Style.RESET_ALL}", file=sys.stderr, flush=True)
+    start_deepgram = start_asr  # older name; Deepgram remains the default vendor
+
+    def _on_asr_error(self, err: object) -> None:
+        tag = self.settings.asr_provider
+        print(f"{Fore.RED}{tag} error: {err}{Style.RESET_ALL}", file=sys.stderr, flush=True)
         asyncio.run_coroutine_threadsafe(
-            self._send_json({"error": f"deepgram: {err}"}),
+            self._send_json({"error": f"{tag}: {err}"}),
             self.loop,
         )
 
-    def _on_dg_message(self, message: object) -> None:
-        parsed = parse_deepgram_result(message)
-        if parsed is None or not parsed.is_final:
+    def _on_asr_event(self, event: AsrEvent) -> None:
+        if event is None or not event.is_final or not event.text.strip():
             return
-        asyncio.run_coroutine_threadsafe(self._ingest_final(parsed), self.loop)
+        asyncio.run_coroutine_threadsafe(self._ingest_final(event), self.loop)
 
     async def feed_uplink(self, raw: object) -> None:
         parsed = parse_uplink_message(raw)
@@ -630,19 +647,20 @@ class LiveSession:
         pcm, role, direction = parsed
         self.last_role = role
         self.last_direction = direction
-        if self.dg is not None:
-            self.dg.send_pcm(pcm)
+        if self.asr is not None:
+            self.asr.send_pcm(pcm)
 
-    async def _ingest_final(self, parsed: ParsedAsrResult) -> None:
+    async def _ingest_final(self, event: AsrEvent) -> None:
         recv_s = self.now_rel()
         rec: dict[str, Any] = {
-            "transcript": parsed.transcript,
-            "speech_final": parsed.speech_final,
-            "is_final": parsed.is_final,
-            "asr_confidence": parsed.confidence,
-            "start_s": parsed.start_s,
-            "duration_s": parsed.duration_s,
+            "transcript": event.text,
+            "speech_final": event.speech_final,
+            "is_final": event.is_final,
+            "asr_confidence": event.confidence,
+            "start_s": event.start_s,
+            "duration_s": event.duration_s,
             "recv_s": recv_s,
+            "asr": event.provider or self.settings.asr_provider,
             "speakerRole": self.last_role,
             "direction": self.last_direction,
         }
@@ -656,14 +674,14 @@ class LiveSession:
         )
         print(
             f"{fmt_session_ts(recv_s)} FINAL  {display_speaker(self.last_role)}  "
-            f"speech_final={str(parsed.speech_final).lower()}  {parsed.transcript}",
+            f"speech_final={str(event.speech_final).lower()}  {event.text}",
             flush=True,
         )
         seg = FinalSegment(
-            text=parsed.transcript,
-            start_s=parsed.start_s,
-            duration_s=parsed.duration_s,
-            speech_final=parsed.speech_final,
+            text=event.text,
+            start_s=event.start_s,
+            duration_s=event.duration_s,
+            speech_final=event.speech_final,
             recv_s=recv_s,
         )
         self._recent_finals.append(rec)
@@ -1225,23 +1243,23 @@ class LiveSession:
             leftover = self.agg.flush(self.now_rel())
         if leftover:
             await self._handle_turns(leftover)
-        if self.dg is not None:
+        if self.asr is not None:
             try:
-                self.dg.close()
+                self.asr.close()
             except Exception:
                 pass
-            self.dg = None
+            self.asr = None
 
     def close(self) -> None:
         """Sync fallback when not on the session loop."""
         self.closed = True
         self._policy_clear_timer()
-        if self.dg is not None:
+        if self.asr is not None:
             try:
-                self.dg.close()
+                self.asr.close()
             except Exception:
                 pass
-            self.dg = None
+            self.asr = None
 
 
 def _env(name: str, default: str) -> str:
@@ -1256,9 +1274,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--host", default=None, help=f"bind host (default {DEFAULT_HOST})")
     p.add_argument("--port", type=int, default=None, help=f"WS port (default {DEFAULT_PORT})")
     p.add_argument(
+        "--asr",
+        default=None,
+        help="ASR vendor: deepgram (default) or aliyun (LIVE_ASR)",
+    )
+    p.add_argument(
         "--lang",
         default=None,
-        help=f"Deepgram language: zh (default) or multi",
+        help=f"Deepgram language: zh (default) or multi; Aliyun model is on the NLS project",
     )
     p.add_argument(
         "--wearer-note",
@@ -1442,31 +1465,46 @@ def build_settings(args: argparse.Namespace) -> LiveSettings:
         fix_entries=fix_entries,
         permissive=bool(getattr(args, "permissive", False))
         or _env("LIVE_PERMISSIVE", "").strip().lower() in {"1", "true", "yes", "on"},
+        asr_provider=resolve_asr_provider(getattr(args, "asr", None)),
     )
 
 
 def log_startup(settings: LiveSettings) -> None:
     n = len(settings.keyterms)
     src = str(settings.terms_path) if settings.terms_path else "(disabled)"
+    asr = settings.asr_provider
+    vendor = (
+        f"dg={DEEPGRAM_MODEL}"
+        if asr == ASR_DEEPGRAM
+        else "nls=SpeechTranscriber"
+    )
     print(
         f"live  ws://{settings.host}:{settings.port}  "
-        f"dg={DEEPGRAM_MODEL} lang={settings.lang} locale={settings.locale}  "
+        f"asr={asr}  {vendor} lang={settings.lang} locale={settings.locale}  "
         f"audio={SAMPLE_RATE}Hz mono s16le  "
         f"router_timeout_ms={settings.router_timeout_ms}  "
         f"router_timeout_source={settings.router_timeout_source}  "
         f"(DEFAULT_ROUTER_TIMEOUT_MS={DEFAULT_ROUTER_TIMEOUT_MS})  "
-        f"dg_handshake={settings.handshake_timeout_s:.0f}s  "
+        f"handshake={settings.handshake_timeout_s:.0f}s  "
         f"agg_silence={settings.silence_ms}ms  "
         f"min_route_chars={settings.min_route_chars}",
         flush=True,
     )
-    print(
-        f"keyterms_dg={n}  fix_entries={len(settings.fix_entries)}  "
-        f"from {src}  "
-        f"(canon only, cap {DEEPGRAM_KEYTERM_MAX}; variants are fix-only; "
-        "nova-3 uses keyterm, not keywords)",
-        flush=True,
-    )
+    if asr == ASR_ALIYUN:
+        print(
+            f"keyterms_dg=n/a  (Aliyun does not take Deepgram keyterm; "
+            f"terms_zh.json still feeds transcript_fix, "
+            f"fix_entries={len(settings.fix_entries)} from {src})",
+            flush=True,
+        )
+    else:
+        print(
+            f"keyterms_dg={n}  fix_entries={len(settings.fix_entries)}  "
+            f"from {src}  "
+            f"(canon only, cap {DEEPGRAM_KEYTERM_MAX}; variants are fix-only; "
+            "nova-3 uses keyterm, not keywords)",
+            flush=True,
+        )
     pol = settings.policy
     if settings.policy_enabled:
         print(
@@ -1507,15 +1545,16 @@ def log_startup(settings: LiveSettings) -> None:
 
 
 async def run_server(settings: LiveSettings, dg_key: str) -> None:
-    # Fail-fast: live connect kwargs must never include keywords.
-    probe = listen_connect_kwargs(settings.lang, settings.keyterms or None)
-    if "keywords" in probe:
-        raise RuntimeError("nova-3 connect must not set keywords")
-    dg_n = len(probe.get("keyterm") or [])
-    if dg_n > DEEPGRAM_KEYTERM_MAX:
-        raise RuntimeError(
-            f"nova-3 keyterm count {dg_n} exceeds cap {DEEPGRAM_KEYTERM_MAX}"
-        )
+    if settings.asr_provider == ASR_DEEPGRAM:
+        # Fail-fast: live connect kwargs must never include keywords.
+        probe = listen_connect_kwargs(settings.lang, settings.keyterms or None)
+        if "keywords" in probe:
+            raise RuntimeError("nova-3 connect must not set keywords")
+        dg_n = len(probe.get("keyterm") or [])
+        if dg_n > DEEPGRAM_KEYTERM_MAX:
+            raise RuntimeError(
+                f"nova-3 keyterm count {dg_n} exceeds cap {DEEPGRAM_KEYTERM_MAX}"
+            )
     jsonl = settings.log_path.open("a", encoding="utf-8")
     jsonl_lock = threading.Lock()
     started = time.perf_counter()
@@ -1526,15 +1565,35 @@ async def run_server(settings: LiveSettings, dg_key: str) -> None:
         session = LiveSession(websocket, settings, jsonl, jsonl_lock, started, dg_key)
         try:
             try:
-                await asyncio.to_thread(session.start_deepgram)
+                await asyncio.to_thread(session.start_asr)
             except Exception as exc:
-                print(f"{Fore.RED}Deepgram handshake failed: {exc}{Style.RESET_ALL}", flush=True)
+                tag = (
+                    "Deepgram"
+                    if settings.asr_provider == ASR_DEEPGRAM
+                    else "Aliyun NLS"
+                )
+                print(f"{Fore.RED}{tag} handshake failed: {exc}{Style.RESET_ALL}", flush=True)
                 await websocket.send(
-                    json.dumps({"error": f"Deepgram handshake failed: {exc}"}, ensure_ascii=False)
+                    json.dumps(
+                        {"error": f"{tag} handshake failed: {exc}"},
+                        ensure_ascii=False,
+                    )
                 )
                 return
-            await websocket.send(json.dumps({"status": "deepgram_ready"}, ensure_ascii=False))
-            print(f"[live] Deepgram ready for {addr}", flush=True)
+            # Glasses / phone page still wait for this status string.
+            await websocket.send(
+                json.dumps(
+                    {
+                        "status": "deepgram_ready",
+                        "asr": settings.asr_provider,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            print(
+                f"[live] {settings.asr_provider} ready for {addr}",
+                flush=True,
+            )
             session._tick_task = asyncio.create_task(session._agg_ticker())
             async for message in websocket:
                 await session.feed_uplink(message)
@@ -1553,15 +1612,29 @@ async def run_server(settings: LiveSettings, dg_key: str) -> None:
 def main(argv: list[str] | None = None) -> int:
     colorama_init()
     args = parse_args(argv)
-    settings = build_settings(args)
     try:
-        dg_key = require_api_key()
-    except SystemExit:
-        print(
-            "server/live.py: DEEPGRAM_API_KEY is required (export or .env).",
-            file=sys.stderr,
-        )
+        settings = build_settings(args)
+    except AsrConfigError as exc:
+        print(f"server/live.py: {exc}", file=sys.stderr)
         return 2
+    dg_key = ""
+    if settings.asr_provider == ASR_DEEPGRAM:
+        try:
+            dg_key = require_api_key()
+        except SystemExit:
+            print(
+                "server/live.py: DEEPGRAM_API_KEY is required (export or .env).",
+                file=sys.stderr,
+            )
+            return 2
+    else:
+        try:
+            from aliyun_nls import require_aliyun_nls_config
+
+            require_aliyun_nls_config()
+        except AsrConfigError as exc:
+            print(f"server/live.py: {exc}", file=sys.stderr)
+            return 2
     try:
         from router import get_settings as router_get_settings
 

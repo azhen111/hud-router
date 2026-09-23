@@ -89,7 +89,7 @@ Aggregator only (constructed FINAL sequences; no mic): silence, max-turn, min-ch
 
 Nova-3 does **not** support `keywords` (HTTP 400 / silent WS close). Live path passes repeated **`keyterm`** (canonical terms only, no ASR variants, no `/`, cap 80). Docs: https://developers.deepgram.com/docs/keyterm — Keywords page says Nova-3 must use Keyterm Prompting: https://developers.deepgram.com/docs/keywords
 
-`DeepgramPcmSession` in `stream.py` is the same listen options without a mic (PCM bytes in). `server/live.py` uses it and may pass `keyterm`. Handshake wait is 60s. M1/M2 CLI (`run_mic_deepgram_session`) is unchanged unless you pass keyterms.
+`DeepgramPcmSession` in `stream.py` is the same listen options without a mic (PCM bytes in). Live wraps it in `DeepgramAsrSession` (`asr/provider.py`) so Aliyun NLS can share the same `AsrEvent` (`text`, `is_final`, `speech_final`, `confidence`, `ts`, plus `start_s`/`duration_s` for the aggregator). `--asr aliyun` uses `asr/aliyun_nls.py` (SpeechTranscriber WebSocket). M1/M2 CLI (`run_mic_deepgram_session`) stays Deepgram-only. Handshake wait is 60s.
 
 ## Install
 
