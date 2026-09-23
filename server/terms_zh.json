@@ -26,6 +26,17 @@
   "CDN",
   "SSR",
   "Svelte",
+  "Vue",
+  {"term": "Vue2", "variants": ["VUE2", "vue2"]},
+  {"term": "Vue3", "variants": ["VUE3", "WE3", "vue3"]},
+  "React",
+  "Angular",
+  {"term": "Java", "variants": ["扎瓦", "JAVA"]},
+  "Spring",
+  {
+    "term": "Spring Boot",
+    "variants": ["SpringBoot", "springboot", "Spingboot", "Sping Boot", "SRINBU"]
+  },
   "RAG",
   "API",
   "JSON",

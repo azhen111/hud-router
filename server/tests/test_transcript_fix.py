@@ -26,6 +26,8 @@ SAMPLES = [
     ("Bocker", "Docker"),
     ("pud", "Pod"),
     ("postgress", "PostgreSQL"),
+    ("WE3", "Vue3"),
+    ("Spingboot", "Spring Boot"),
 ]
 
 SESSION_SAMPLES_PATH = (
@@ -43,6 +45,15 @@ class LoadEntries(unittest.TestCase):
         self.assertIn("GWT", jwt.variants)
         self.assertIn("JWA", jwt.variants)
         self.assertIn("Jva", jwt.variants)
+        terms_needed = {"Vue", "Vue2", "Vue3", "React", "Angular", "Java", "Spring", "Spring Boot"}
+        self.assertTrue(terms_needed <= terms)
+        vue3 = next(e for e in entries if e.term == "Vue3")
+        self.assertIn("WE3", vue3.variants)
+        java = next(e for e in entries if e.term == "Java")
+        self.assertIn("扎瓦", java.variants)
+        boot = next(e for e in entries if e.term == "Spring Boot")
+        self.assertIn("Spingboot", boot.variants)
+        self.assertIn("SRINBU", boot.variants)
         grpc = next(e for e in entries if e.term == "gRPC")
         self.assertIn("GRPC", grpc.variants)
         self.assertGreaterEqual(len(entries), 40)
@@ -71,6 +82,33 @@ class ExactAndFuzzy(unittest.TestCase):
         fixed, hits = apply_fix("JWT 是什么", self.entries)
         self.assertEqual(fixed, "JWT 是什么")
         self.assertEqual(hits, [])
+
+    def test_we3_and_spingboot(self) -> None:
+        vue, hits = apply_fix("WE3的实现原理是什么", self.entries)
+        self.assertEqual(vue, "Vue3的实现原理是什么")
+        self.assertEqual([h.term for h in hits], ["Vue3"])
+        boot, hits2 = apply_fix("Spingboot框架你使用过吗", self.entries)
+        self.assertEqual(boot, "Spring Boot框架你使用过吗")
+        self.assertEqual([h.term for h in hits2], ["Spring Boot"])
+        phrase, hits3 = apply_fix("Sping Boot 和 React", self.entries)
+        self.assertEqual(phrase, "Spring Boot 和 React")
+        self.assertIn("Spring Boot", {h.term for h in hits3})
+
+    def test_jwa_with_spring_not_forced_to_jwt(self) -> None:
+        keep, hits = apply_fix("JWA中的SpringBoot框架", self.entries)
+        self.assertEqual(keep, "JWA中的Spring Boot框架")
+        self.assertNotIn("JWT", {h.term for h in hits})
+        self.assertNotIn("JWT", keep)
+        srin, hits2 = apply_fix("JWA中的SRINBU的框架", self.entries)
+        self.assertEqual(srin, "JWA中的Spring Boot的框架")
+        self.assertNotIn("JWT", srin)
+        java, hits3 = apply_fix("扎瓦中的Spring框架", self.entries)
+        self.assertEqual(java, "Java中的Spring框架")
+        self.assertEqual([h.term for h in hits3], ["Java"])
+        # Isolated JWA is still JWT (no Java/Spring stack nearby).
+        lone, hits4 = apply_fix("JWA有哪些特性", self.entries)
+        self.assertEqual(lone, "JWT有哪些特性")
+        self.assertEqual([h.term for h in hits4], ["JWT"])
 
     def test_ten_known_mistranscribes(self) -> None:
         missed: list[str] = []

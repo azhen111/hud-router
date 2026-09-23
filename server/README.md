@@ -18,7 +18,9 @@ Nova-3 **不支持** `keywords`（HTTP 400 / 流式 WS 静默断开）。必须�
 - Keywords 页写明 Nova-3 必须改用 Keyterm：https://developers.deepgram.com/docs/keywords
 - streaming nova-3 + keywords 失败：https://github.com/deepgram/deepgram-js-sdk/issues/474
 
-词表：`server/terms_zh.json`。元素可以是纯字符串，或 `{"term":"JWT","variants":["GWT","JWA"]}`。Deepgram `keyterm` **只发 canonical**（`term` / 纯字符串），**不发 variants**。`CI/CD` 会变成 `CICD`（`/` 不能进 query）。nova-3 zh 实测约 80 条握手成功、90+ 会 HTTP 400，代码硬顶 `DEEPGRAM_KEYTERM_MAX=80`。纠错层仍用同一张表的 variants。启动横幅：`keyterms_dg=N  fix_entries=M`。`--no-keyterms` 只关 Deepgram 词表；`--no-fix` 关纠错。会话错听夹具：`server/fixtures/asr_mistranscribe_samples.json`。
+词表：`server/terms_zh.json`。元素可以是纯字符串，或 `{"term":"Vue3","variants":["WE3","VUE3"]}`。含 Vue / Vue2 / Vue3、React、Angular、Java、Spring、Spring Boot。Deepgram `keyterm` **只发 canonical**（`term` / 纯字符串），**不发 variants**。`CI/CD` 会变成 `CICD`（`/` 不能进 query）。nova-3 zh 实测约 80 条握手成功、90+ 会 HTTP 400，代码硬顶 `DEEPGRAM_KEYTERM_MAX=80`。纠错层仍用同一张表的 variants（`WE3`→Vue3、`Spingboot`→Spring Boot、`扎瓦`→Java）。`JWA` 仍是 JWT 变体，但同一句里已有 Spring/Java/Boot/扎瓦/SRINBU 时**不**改成 JWT。启动横幅：`keyterms_dg=N  fix_entries=M`。`--no-keyterms` 只关 Deepgram 词表；`--no-fix` 关纠错。会话错听夹具：`server/fixtures/asr_mistranscribe_samples.json`。
+
+Judge **超时不是过滤**。`skip_reason=router_timeout` 表示 `route()` 在时限内没返回（默认 `DEFAULT_ROUTER_TIMEOUT_MS=3000`；横幅 `source=env` 说明 `.env` 的 `LIVE_ROUTER_TIMEOUT_MS` 覆盖了代码默认，佩戴者 jsonl 里的 6000ms 属于这类）。Vue3 / VUE2 和 VUE3 区别 等句若 `layers.judge.reason=timeout`，不是词表丢掉了 Vue。不改 `ROUTER_SYSTEM_PROMPT` / testcases* 来「放宽」超时。
 
 官方写明 **Nova-3 的 monolingual 和 multilingual 都可以用 `keyterm`**：https://developers.deepgram.com/docs/keyterm 。Self-hosted 2025-12-10 changelog 也写了 Nova-3 Multi 的 multilingual keyterm（最多约 500 token）：https://developers.deepgram.com/changelog/2025/12/10 。旧版 hosted/self-hosted 模型若报 `The selected Nova-3 model does not support keyterm prompting`，是模型版本问题，不是 `language=multi` 本身禁 keyterm。本仓库对 `zh` 和 `multi` 都传同一份 `keyterm` 列表，从不传 `keywords`。
 
@@ -167,7 +169,7 @@ python server/live.py --lang multi --log live_multi.jsonl
 | lang | `zh` | `--lang` / `LIVE_LANG` | Deepgram `zh` 或 `multi` |
 | locale | 由 lang 推导（`multi`→`zh`） | （随 lang） | 交给 `route()` 的 `locale` |
 | wearer_note | 佩戴者是软件工程师，当前对话为 IT 技术讨论 | `--wearer-note` / `LIVE_WEARER_NOTE` | 每段都带 |
-| router timeout | **3000 ms** | `--router-timeout-ms` / `LIVE_ROUTER_TIMEOUT_MS` | 超时放弃，不重试。启动横幅 + 每次 timeout skip 都打印 `waited=Nms` 和 `source=` |
+| router timeout | **3000 ms** | `--router-timeout-ms` / `LIVE_ROUTER_TIMEOUT_MS` | 超时放弃，不重试。**不是词表过滤**。启动横幅 + 每次 timeout skip 都打印 `waited=Nms` 和 `source=`（`source=env` 表示 `.env` 覆盖了 3000） |
 | DG handshake | 60 s | `--handshake-timeout-s` / `DEEPGRAM_HANDSHAKE_TIMEOUT_S` | Deepgram listen 握手 |
 | agg silence | 1200 ms | `--silence-ms` / `AGG_SILENCE_MS` | 独立 ticker 每 50ms `tick()`；最后一条 FINAL 后再等这么久就关窗，不必再来 ASR |
 | min route chars | 3 | `--min-route-chars` / `MIN_ROUTE_CHARS` | 聚合后短于此且未命中 keyterm 则 `skip_reason=too_short` |

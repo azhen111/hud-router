@@ -18,14 +18,16 @@
 
 ## 纠错层离线样本
 
-词表 + `FIX_SIMILARITY=0.6`，无 LLM。`server/fixtures/asr_mistranscribe_samples.json` 是从佩戴者本机 `live_*.jsonl` 抽出的 24 条错听；`test_session_samples_file` 覆盖全句。未映射垃圾：`NIkkMykykM`、`LANSALSGAL`。
+词表 + 仅显式 variants（无模糊）。`server/fixtures/asr_mistranscribe_samples.json` 含会话错听 + Vue/Spring 样本；`test_session_samples_file` 覆盖全句。未映射垃圾：`NIkkMykykM`、`LANSALSGAL`。JWA 单独仍改 JWT；`JWA中的SpringBoot` 不改 JWT。
 
 孤立 token（`test_ten_known_mistranscribes`）：
 
 | ASR 错听 | 纠正为 |
 | --- | --- |
 | FLCK | Flex |
-| JWA | JWT |
+| JWA | JWT（孤立 token；与 Spring/Java 同句则不改） |
+| WE3 | Vue3 |
+| Spingboot | Spring Boot |
 | CFCAR | Kafka |
 | 库布尔netes | Kubernetes |
 | GrafficQL | GraphQL |
@@ -35,7 +37,7 @@
 | pud | Pod |
 | postgress | PostgreSQL |
 
-会话原句（22/22 可映射；2 条垃圾保持原样）：
+会话原句（可映射行须命中；2 条垃圾保持原样）：
 
 | 原句 | 纠正后 |
 | --- | --- |
@@ -61,6 +63,12 @@
 | 你说一下JVA的重写 | 你说一下JWT的重写 |
 | JWA有哪些特性 | JWT有哪些特性 |
 | Jva | JWT |
+| WE3的实现原理是什么 | Vue3的实现原理是什么 |
+| VUE2和VUE3的区别是什么? | Vue2和Vue3的区别是什么? |
+| Spingboot框架你使用过吗 | Spring Boot框架你使用过吗 |
+| JWA中的SpringBoot框架 | JWA中的Spring Boot框架（**不**改成 JWT） |
+| JWA中的SRINBU的框架 | JWA中的Spring Boot的框架 |
+| 扎瓦中的Spring框架 | Java中的Spring框架 |
 
 ## Before（对照）
 
@@ -97,3 +105,16 @@ python server/live.py --lang multi --log live_multi.jsonl
 - 策略拒绝：`skip_reason=policy_<reason>`，`policy.reason` 为 `below_hint` / `budget` / `dedup` / `over_max_two_lines`。
 
 对比 before/after 或 zh/multi 时，只比较这 20 句对应的 `turn` 行，不要事后改 prompt 或 testcases。
+
+## 超时看起来像「被过滤」
+
+镜片没字往往不是词表过滤。看 `kind=turn` 的 `skip_reason` / `layers`：
+
+| 现象 | 实际原因 |
+| --- | --- |
+| `skip_reason=router_timeout`，`layers` 里 `judge` `reason=timeout` | judge 在 `LIVE_ROUTER_TIMEOUT_MS` 内没返回。代码默认 **3000ms**。jsonl 若是 `waited=6000` 那是 `.env` / `--router-timeout-ms` 覆盖，不是默认，也不是 drop-Self 或 keyterm 过滤。 |
+| `answer_timeout` / `answer_skip` | 已触发，answer 超时或空/SKIP。 |
+| `too_short` | 聚合句太短且未命中词表。 |
+| judge `yes/no not a request for information` | 问句被判成是非确认（如「你使用过吗」），不是识别失败。 |
+
+`Vue2的原理是什么` 这类已 TRIGGER 并下行的，词表并没有滤掉。`WE3` / `VUE3` 超时是模型慢，不是「没有 Vue 这个词就不判」。改词表后仍须重启；超时要把横幅里的 `router_timeout_ms` / `source=` 看清楚。不改 `ROUTER_SYSTEM_PROMPT` / testcases*。

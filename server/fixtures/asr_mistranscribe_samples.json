@@ -118,5 +118,35 @@
     "file": "live_20260923_210455.jsonl",
     "text": "Jva",
     "expect": "JWT"
+  },
+  {
+    "file": "live_session_vue_spring",
+    "text": "WE3的实现原理是什么",
+    "expect": "Vue3的实现原理是什么"
+  },
+  {
+    "file": "live_session_vue_spring",
+    "text": "VUE2和VUE3的区别是什么?",
+    "expect": "Vue2和Vue3的区别是什么?"
+  },
+  {
+    "file": "live_session_vue_spring",
+    "text": "Spingboot框架你使用过吗",
+    "expect": "Spring Boot框架你使用过吗"
+  },
+  {
+    "file": "live_session_vue_spring",
+    "text": "JWA中的SpringBoot框架",
+    "expect": "JWA中的Spring Boot框架"
+  },
+  {
+    "file": "live_session_vue_spring",
+    "text": "JWA中的SRINBU的框架",
+    "expect": "JWA中的Spring Boot的框架"
+  },
+  {
+    "file": "live_session_vue_spring",
+    "text": "扎瓦中的Spring框架",
+    "expect": "Java中的Spring框架"
   }
 ]

@@ -18,6 +18,16 @@ DEFAULT_FIX_SIMILARITY = 0.85  # unused for matching; replacements are exact var
 # Latin / dotted terms only. CJK and mixed (库布尔netes) are exact-needle
 # replacements so "前端中FLCK" does not become one token.
 _TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9/_.+-]*")
+# JWA is a JWT ASR variant, but live sessions also use JWA for Java+Spring.
+# Skip JWA→JWT when the same utterance already looks like that stack.
+_JWA_JAVA_STACK_MARKERS: tuple[str, ...] = (
+    "spring",
+    "java",
+    "boot",
+    "扎瓦",
+    "srinbu",
+    "sping",
+)
 
 
 @dataclass(frozen=True)
@@ -137,20 +147,35 @@ def _has_cjk(text: str) -> bool:
     return any("\u4e00" <= c <= "\u9fff" for c in text)
 
 
+def _jwa_looks_like_java_stack(text: str) -> bool:
+    """True when JWA is more likely Java + Spring than JWT."""
+    folded = text.casefold()
+    return any(marker in folded for marker in _JWA_JAVA_STACK_MARKERS)
+
+
+def _is_phrase_needle(needle: str, term: str) -> bool:
+    """CJK / mixed / spaced variants need a span pass, not Latin tokenize."""
+    if not needle or needle == term:
+        return False
+    if _has_cjk(needle):
+        return True
+    return any(ch.isspace() for ch in needle)
+
+
 def _apply_cjk_variants(
     text: str,
     entries: list[TermEntry],
     hits: list[FixHit],
 ) -> str:
-    """Exact replace of CJK / mixed variants. Longest needle first.
+    """Exact replace of CJK / mixed / spaced variants. Longest needle first.
 
-    Handles 线流→限流 and 库布尔netes→Kubernetes before Latin tokenization
-    so a Chinese prefix cannot swallow FLCK / JVA / GraphQL.
+    Handles 线流→限流, 库布尔netes→Kubernetes, and ``Sping Boot`` before
+    Latin tokenization so a Chinese prefix cannot swallow FLCK / JVA / GraphQL.
     """
     needles: list[tuple[str, TermEntry]] = []
     for entry in entries:
         for needle in entry.needles():
-            if needle == entry.term or not _has_cjk(needle):
+            if not _is_phrase_needle(needle, entry.term):
                 continue
             needles.append((needle, entry))
     needles.sort(key=lambda pair: (-len(pair[0]), pair[0]))
@@ -208,6 +233,12 @@ def apply_fix(
         key = token.casefold()
         if key in variant_map:
             entry = variant_map[key]
+            if (
+                key == "jwa"
+                and entry.term == "JWT"
+                and _jwa_looks_like_java_stack(text)
+            ):
+                return token
             if token != entry.term:
                 hits.append(FixHit(token, entry.term, entry.term, 1.0))
                 return entry.term

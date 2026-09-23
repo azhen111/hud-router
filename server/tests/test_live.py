@@ -157,6 +157,14 @@ class KeytermLoad(unittest.TestCase):
             "PostgreSQL",
             "MySQL",
             "CICD",
+            "Vue",
+            "Vue2",
+            "Vue3",
+            "React",
+            "Angular",
+            "Java",
+            "Spring",
+            "Spring Boot",
         }
         missing = required - set(terms)
         self.assertEqual(missing, set())
@@ -179,6 +187,10 @@ class KeytermLoad(unittest.TestCase):
             "GRPC",
             "Jva",
             "CI/CD",
+            "WE3",
+            "Spingboot",
+            "扎瓦",
+            "SRINBU",
         }
         leaked = variants & set(terms)
         self.assertEqual(leaked, set())
